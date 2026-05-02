@@ -1,24 +1,30 @@
 #!/bin/bash
 
-set -ouex pipefail
+set -eoux pipefail
 
-### Install packages
+### Remove gaming packages not wanted in this image
+dnf5 remove -y --no-autoremove \
+    steam \
+    steam-devices \
+    lutris
 
-# Packages can be installed from any enabled yum repo on the image.
-# RPMfusion repos are available by default in ublue main images
-# List of rpmfusion packages can be found here:
-# https://mirrors.rpmfusion.org/mirrorlist?path=free/fedora/updates/43/x86_64/repoview/index.html&protocol=https&redirect=1
+# Waydroid is not present on Nvidia builds — suppress failure if absent
+dnf5 remove -y --no-autoremove waydroid waydroid-selinux 2>/dev/null || true
 
-# this installs a package from fedora repos
-dnf5 install -y tmux 
+### Install packages / enable services
+dnf5 install -y tmux
 
-# Use a COPR Example:
-#
-# dnf5 -y copr enable ublue-os/staging
-# dnf5 -y install package
-# Disable COPRs so they don't end up enabled on the final image:
-# dnf5 -y copr disable ublue-os/staging
+# Tailscale is already installed in the bazzite base image but its systemd
+# service is shipped disabled by default. Enable it here so it starts on boot.
+# After first boot, run: sudo tailscale up
+systemctl enable tailscaled
 
-#### Example for enabling a System Unit File
+# Remove the Flatpak blocklist entries for Steam and Lutris.
+# Without this, bazzite-flatpak-manager would still block these apps from Flathub
+# at runtime even though the RPMs are gone.
+sed -i \
+    -e '/com\.valvesoftware\.Steam/d' \
+    -e '/net\.lutris\.Lutris/d' \
+    /usr/share/ublue-os/flatpak-blocklist 2>/dev/null || true
 
-systemctl enable podman.socket
+dnf5 clean all

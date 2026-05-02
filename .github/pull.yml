@@ -1,0 +1,6 @@
+version: "1"
+rules:
+  - base: main
+    upstream: ublue-os:image-template:main
+    mergeMethod: merge   # creates a PR for you to review before merging
+    mergeUnstable: false
