@@ -1,264 +1,319 @@
-# image-template
+# Custom Bazzite Image Setup Guide
 
-This repository is meant to be a template for building your own custom [bootc](https://github.com/bootc-dev/bootc) image. This template is the recommended way to make customizations to any image published by the Universal Blue Project.
+Custom image based on `bazzite-gnome-nvidia` with Steam, Lutris, and Waydroid removed.
+Built and published via GitHub Actions to GHCR, auto-rebuilds when the upstream Bazzite image updates.
 
-# Community
+---
 
-If you have questions about this template after following the instructions, try the following spaces:
-- [Universal Blue Forums](https://universal-blue.discourse.group/)
-- [Universal Blue Discord](https://discord.gg/WEu6BdFEtp)
-- [bootc discussion forums](https://github.com/bootc-dev/bootc/discussions) - This is not an Universal Blue managed space, but is an excellent resource if you run into issues with building bootc images.
+## Overview
 
-# How to Use
+The approach uses [`ublue-os/image-template`](https://github.com/ublue-os/image-template) as a starting point. The workflow:
 
-To get started on your first bootc image, simply read and follow the steps in the next few headings.
-If you prefer instructions in video form, TesterTech created an excellent tutorial, embedded below.
+1. Your GitHub repo holds a `Containerfile` and `build.sh`
+2. GitHub Actions builds a new OCI image and pushes it to GHCR daily
+3. Each build pulls the latest `bazzite-gnome-nvidia:stable` digest, so upstream changes are automatically incorporated
+4. `wei/pull` keeps the build infrastructure (GitHub Actions workflow files) in sync with the upstream template
+5. Your running system rebases to your custom image and updates normally via Bazzite's built-in update mechanism
 
-[![Video Tutorial](https://img.youtube.com/vi/IxBl11Zmq5w/0.jpg)](https://www.youtube.com/watch?v=IxBl11Zmq5wE)
+---
 
-## Step 0: Prerequisites
+## Prerequisites
 
-These steps assume you have the following:
-- A Github Account
-- A machine running a bootc image (e.g. Bazzite, Bluefin, Aurora, or Fedora Atomic)
-- Experience installing and using CLI programs
+- A GitHub account
+- `cosign` installed locally ([install instructions](https://docs.sigstore.dev/cosign/system_config/installation/))
+- A machine running Bazzite (or any Fedora Atomic desktop) for the final rebase step
 
-## Step 1: Preparing the Template
+---
 
-### Step 1a: Copying the Template
+## Step 1 — Create the repository
 
-Select `Use this Template` on this page. You can set the name and description of your repository to whatever you would like, but all other settings should be left untouched.
-
-Once you have finished copying the template, you need to enable the Github Actions workflows for your new repository.
-To enable the workflows, go to the `Actions` tab of the new repository and click the button to enable workflows.
-
-### Step 1b: Cloning the New Repository
-
-Here I will defer to the much superior GitHub documentation on the matter. You can use whichever method is easiest.
-[GitHub Documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository)
-
-Once you have the repository on your local drive, proceed to the next step.
-
-## Step 2: Initial Setup
-
-### Step 2a: Creating a Cosign Key
-
-Container signing is important for end-user security and is enabled on all Universal Blue images. By default the image builds *will fail* if you don't.
-
-First, install the [cosign CLI tool](https://edu.chainguard.dev/open-source/sigstore/cosign/how-to-install-cosign/#installing-cosign-with-the-cosign-binary)
-With the cosign tool installed, run inside your repo folder:
+1. Go to [https://github.com/ublue-os/image-template](https://github.com/ublue-os/image-template)
+2. Click **Use this template** → **Create a new repository**
+3. Name it whatever you want (e.g. `my-bazzite`). Keep all other settings as-is.
+4. Go to the **Actions** tab of the new repo and click the button to enable workflows.
+5. Clone the repo locally:
 
 ```bash
-COSIGN_PASSWORD="" cosign generate-key-pair
+git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME
+cd YOUR_REPO_NAME
 ```
 
-The signing key will be used in GitHub Actions and will not work if it is password protected.
+---
 
-> [!WARNING]
-> Be careful to *never* accidentally commit `cosign.key` into your git repo. If this key goes out to the public, the security of your repository is compromised.
+## Step 2 — Generate cosign signing keys
 
-Next, you need to add the key to GitHub. This makes use of GitHub's secret signing system.
-
-<details>
-    <summary>Using the Github Web Interface (preferred)</summary>
-
-Go to your repository settings, under `Secrets and Variables` -> `Actions`
-![image](https://user-images.githubusercontent.com/1264109/216735595-0ecf1b66-b9ee-439e-87d7-c8cc43c2110a.png)
-Add a new secret and name it `SIGNING_SECRET`, then paste the contents of `cosign.key` into the secret and save it. Make sure it's the .key file and not the .pub file. Once done, it should look like this:
-![image](https://user-images.githubusercontent.com/1264109/216735690-2d19271f-cee2-45ac-a039-23e6a4c16b34.png)
-</details>
-<details>
-<summary>Using the Github CLI</summary>
-
-If you have the `github-cli` installed, run:
+Container signing is required — builds will fail without it.
 
 ```bash
-gh secret set SIGNING_SECRET < cosign.key
+cosign generate-key-pair
+# Do NOT enter a password when prompted, just press Enter.
+# This produces cosign.key (private) and cosign.pub (public).
 ```
-</details>
 
-### Step 2b: Choosing Your Base Image
+Add the private key to GitHub:
 
-To choose a base image, simply modify the line in the container file starting with `FROM`. This will be the image your image derives from, and is your starting point for modifications.
-For a base image, you can choose any of the Universal Blue images or start from a Fedora Atomic system. Below this paragraph is a dropdown with a non-exhaustive list of potential base images.
+- Go to your repo → **Settings** → **Secrets and Variables** → **Actions**
+- Click **New repository secret**
+- Name: `SIGNING_SECRET`
+- Value: paste the full contents of `cosign.key`
 
-<details>
-    <summary>Base Images</summary>
+Commit the public key (never commit `cosign.key`):
 
-- Bazzite: `ghcr.io/ublue-os/bazzite:stable`
-- Aurora: `ghcr.io/ublue-os/aurora:stable`
-- Bluefin: `ghcr.io/ublue-os/bluefin:stable`
-- Universal Blue Base: `ghcr.io/ublue-os/base-main:latest`
-- Fedora: `quay.io/fedora/fedora-bootc:42`
-
-You can find more Universal Blue images on the [packages page](https://github.com/orgs/ublue-os/packages).
-</details>
-
-If you don't know which image to pick, choosing the one your system is currently on is the best bet for a smooth transition. To find out what image your system currently uses, run the following command:
 ```bash
-sudo bootc status
+git add cosign.pub
+# Do NOT git add cosign.key
 ```
-This will show you all the info you need to know about your current image. The image you are currently on is displayed after `Booted image:`. Paste that information after the `FROM` statement in the Containerfile to set it as your base image.
 
-### Step 2c: Changing Names
+---
 
-Change the first line in the [Justfile](./Justfile) to your image's name.
+## Step 3 — Edit the Containerfile
 
-To commit and push all the files changed and added in step 2 into your Github repository:
+The template uses a multi-stage build pattern where `build_files` are mounted into the build context via a `scratch` stage rather than copied into the final image layer. Only the base image `FROM` line needs to change:
+
+```dockerfile
+# Allow build scripts to be referenced without being copied into the final image
+FROM scratch AS ctx
+COPY build_files /
+
+# Base Image
+FROM ghcr.io/ublue-os/bazzite-gnome-nvidia:stable
+
+### MODIFICATIONS
+## make modifications desired in your image and install packages by modifying the build.sh script
+## the following RUN directive does all the things required to run "build.sh" as recommended.
+
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache \
+    --mount=type=cache,dst=/var/log \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build.sh
+
+### LINTING
+## Verify final image and contents are correct.
+RUN bootc container lint
+```
+
+The `scratch AS ctx` stage holds your `build_files` and mounts them at `/ctx` during the `RUN` step without adding them as a layer in the final image. The `--mount=type=cache` directives prevent dnf cache directories from bloating the image layer. `bootc container lint` at the end catches any writes to ostree-managed paths that would silently break on deploy.
+
+---
+
+## Step 4 — Edit build.sh
+
+This is where all package customisation lives. The file is `build_files/build.sh`. Note the ordering convention: remove unwanted packages first, then install new ones, then clean.
+
 ```bash
-git add Containerfile Justfile cosign.pub
-git commit -m "Initial Setup"
+#!/bin/bash
+
+set -eoux pipefail
+
+### Remove gaming packages not wanted in this image
+dnf5 remove -y --no-autoremove \
+    steam \
+    steam-devices \
+    lutris
+
+# Waydroid is not present on Nvidia builds — suppress failure if absent
+dnf5 remove -y --no-autoremove waydroid 2>/dev/null || true
+
+### Install packages / enable services
+dnf5 install -y tmux
+
+# Tailscale is already installed in the bazzite base image but its systemd
+# service is shipped disabled by default. Enable it here so it starts on boot.
+# After first boot, run: sudo tailscale up
+systemctl enable tailscaled
+
+# Remove the Flatpak blocklist entries for Steam and Lutris.
+# Without this, bazzite-flatpak-manager would still block these apps from Flathub
+# at runtime even though the RPMs are gone.
+sed -i \
+    -e '/com\.valvesoftware\.Steam/d' \
+    -e '/net\.lutris\.Lutris/d' \
+    /usr/share/ublue-os/flatpak-blocklist 2>/dev/null || true
+
+dnf5 clean all
+```
+
+**Why remove before install:** if a remove fails mid-run, the install has not yet dirtied the layer. It also makes intent clearer — strip what is unwanted, then add what is needed.
+
+**Why `--no-autoremove`:** DNF5 would otherwise cascade-remove auto-installed dependencies. This flag restricts removal to only the named packages, protecting shared libraries used by other parts of the image.
+
+**Why `|| true` for waydroid:** Older Bazzite documentation marked Waydroid as unavailable on Nvidia builds. The package may not be present, so the command is allowed to fail silently.
+
+**Why edit the flatpak-blocklist:** Bazzite ships `/usr/share/ublue-os/flatpak-blocklist` which `bazzite-flatpak-manager` reads at every boot to block certain Flatpaks from Flathub. Without removing these entries, Steam and Lutris would still be blocked from Flathub installation even after the RPMs are removed. Omit the `sed` lines if you want them blocked entirely.
+
+---
+
+## Step 5 — Configure the build workflow
+
+The `on:` triggers in the workflow are already correct as-is from the template — `pull_request` builds without pushing (safe for review), the daily cron picks up upstream Bazzite changes, `push` to `main` triggers on your own changes, and `workflow_dispatch` allows manual runs.
+
+The one cleanup worth making is in the `concurrency` block. The template references `inputs.brand_name` and `inputs.stream_name` which are only populated for `workflow_call` events, not used here. They evaluate to empty strings harmlessly but leave two trailing hyphens in the group name:
+
+```yaml
+# Before (template default — works but untidy)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
+  cancel-in-progress: true
+
+# After (clean)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+```
+
+### Update the image metadata
+
+The `env:` block at the top of `build.yml` contains metadata used for ArtifactHub listings and OCI image labels. Update the three fields that still have template defaults:
+
+```yaml
+env:
+  IMAGE_DESC: "My custom Bazzite image based on bazzite-gnome-nvidia, without Steam, Lutris, and Waydroid. Tailscale enabled by default."
+  IMAGE_KEYWORDS: "bootc,ublue,universal-blue,bazzite,nvidia,gnome"
+  IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/YOUR_GITHUB_USER_ID"  # your GitHub avatar, or any public image URL
+  IMAGE_NAME: "${{ github.event.repository.name }}"  # leave as-is — derived from repo name automatically
+  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # leave as-is
+  DEFAULT_TAG: "latest"  # leave as-is
+```
+
+`IMAGE_LOGO_URL` only affects your listing on [artifacthub.io](https://artifacthub.io) if you choose to register there. Your GitHub avatar URL follows the pattern `https://avatars.githubusercontent.com/u/YOUR_NUMERIC_USER_ID`. Find your numeric user ID at `https://api.github.com/users/YOUR_USERNAME`.
+
+---
+
+## Step 6 — Set up wei/pull for template sync
+
+`wei/pull` keeps your build infrastructure (`.github/workflows/build.yml` and related files) in sync with the upstream `ublue-os/image-template` when they push improvements.
+
+**This is separate from tracking Bazzite image updates** — the daily cron handles that. `wei/pull` is about keeping the CI/CD tooling itself current.
+
+### Install the app
+
+Install the [Pull GitHub App](https://github.com/apps/pull) and grant it access to your repo.
+
+### Add the config
+
+Create `.github/pull.yml`:
+
+```yaml
+version: "1"
+rules:
+  - base: main
+    upstream: ublue-os:image-template:main
+    mergeMethod: merge   # creates a PR for you to review before merging
+    mergeUnstable: false
+```
+
+**Use `mergeMethod: merge`, not `hardreset`.** The `hardreset` method would overwrite your `Containerfile` and `build.sh` whenever the upstream template changes. With `merge`, you get a PR that you can review and resolve conflicts against your customisations manually.
+
+**wei/pull also replaces the keepalive workflow.** GitHub suspends scheduled workflows after 60 days of repo inactivity. Since wei/pull creates automated PRs periodically, it counts as activity and keeps the cron alive. You do not need a separate keepalive workflow.
+
+---
+
+## Step 7 — Verify package names on the actual image
+
+Before pushing, confirm the package names exist in `bazzite-gnome-nvidia`. Run this against the live image:
+
+```bash
+podman run --rm ghcr.io/ublue-os/bazzite-gnome-nvidia:stable \
+    rpm -qa | grep -E 'steam|lutris|waydroid'
+```
+
+Expected output should include `steam`, `steam-devices`, `lutris`. If any name differs, update `build.sh` accordingly.
+
+---
+
+## Step 8 — Push and verify the build
+
+Commit and push everything:
+
+```bash
+git add Containerfile build_files/build.sh .github/workflows/build.yml .github/pull.yml cosign.pub
+git commit -m "Initial setup: bazzite-gnome-nvidia without Steam, Lutris, Waydroid; Tailscale enabled"
 git push
 ```
-Once pushed, go look at the Actions tab on your Github repository's page.  The green checkmark should be showing on the top commit, which means your new image is ready!
 
-## Step 3: Switch to Your Image
+Go to the **Actions** tab of your repo. The workflow should trigger immediately on the push. Wait for a green checkmark — this confirms your image has been built and pushed to GHCR at:
 
-From your bootc system, run the following command substituting in your Github username and image name where noted.
-```bash
-sudo bootc switch ghcr.io/<username>/<image_name>
 ```
-This should queue your image for the next reboot, which you can do immediately after the command finishes. You have officially set up your custom image! See the following section for an explanation of the important parts of the template for customization.
-
-# Repository Contents
-
-## Containerfile
-
-The [Containerfile](./Containerfile) defines the operations used to customize the selected image.This file is the entrypoint for your image build, and works exactly like a regular podman Containerfile. For reference, please see the [Podman Documentation](https://docs.podman.io/en/latest/Introduction.html).
-
-## build.sh
-
-The [build.sh](./build_files/build.sh) file is called from your Containerfile. It is the best place to install new packages or make any other customization to your system. There are customization examples contained within it for your perusal.
-
-## build.yml
-
-The [build.yml](./.github/workflows/build.yml) Github Actions workflow creates your custom OCI image and publishes it to the Github Container Registry (GHCR). By default, the image name will match the Github repository name. There are several environment variables at the start of the workflow which may be of interest to change.
-
-# Building Disk Images
-
-This template provides an out of the box workflow for creating disk images (ISO, qcow, raw) for your custom OCI image which can be used to directly install onto your machines.
-
-This template provides a way to upload the disk images that is generated from the workflow to a S3 bucket. The disk images will also be available as an artifact from the job, if you wish to use an alternate provider. To upload to S3 we use [rclone](https://rclone.org/) which is able to use [many S3 providers](https://rclone.org/s3/).
-
-## Setting Up ISO Builds
-
-The [build-disk.yml](./.github/workflows/build-disk.yml) Github Actions workflow creates a disk image from your OCI image by utilizing the [bootc-image-builder](https://osbuild.org/docs/bootc/). In order to use this workflow you must complete the following steps:
-
-1. Modify `disk_config/iso.toml` to point to your custom container image before generating an ISO image.
-2. If you changed your image name from the default in `build.yml` then in the `build-disk.yml` file edit the `IMAGE_REGISTRY`, `IMAGE_NAME` and `DEFAULT_TAG` environment variables with the correct values. If you did not make changes, skip this step.
-3. Finally, if you want to upload your disk images to S3 then you will need to add your S3 configuration to the repository's Action secrets. This can be found by going to your repository settings, under `Secrets and Variables` -> `Actions`. You will need to add the following
-  - `S3_PROVIDER` - Must match one of the values from the [supported list](https://rclone.org/s3/)
-  - `S3_BUCKET_NAME` - Your unique bucket name
-  - `S3_ACCESS_KEY_ID` - It is recommended that you make a separate key just for this workflow
-  - `S3_SECRET_ACCESS_KEY` - See above.
-  - `S3_REGION` - The region your bucket lives in. If you do not know then set this value to `auto`.
-  - `S3_ENDPOINT` - This value will be specific to the bucket as well.
-
-Once the workflow is done, you'll find the disk images either in your S3 bucket or as part of the summary under `Artifacts` after the workflow is completed.
-
-# Artifacthub
-
-This template comes with the necessary tooling to index your image on [artifacthub.io](https://artifacthub.io). Use the `artifacthub-repo.yml` file at the root to verify yourself as the publisher. This is important to you for a few reasons:
-
-- The value of artifacthub is it's one place for people to index their custom images, and since we depend on each other to learn, it helps grow the community. 
-- You get to see your pet project listed with the other cool projects in Cloud Native.
-- Since the site puts your README front and center, it's a good way to learn how to write a good README, learn some marketing, finding your audience, etc. 
-
-[Discussion Thread](https://universal-blue.discourse.group/t/listing-your-custom-image-on-artifacthub/6446)
-
-# Justfile Documentation
-
-The `Justfile` contains various commands and configurations for building and managing container images and virtual machine images using Podman and other utilities.
-To use it, you must have installed [just](https://just.systems/man/en/introduction.html) from your package manager or manually. It is available by default on all Universal Blue images.
-
-## Environment Variables
-
-- `image_name`: The name of the image (default: "image-template").
-- `default_tag`: The default tag for the image (default: "latest").
-- `bib_image`: The Bootc Image Builder (BIB) image (default: "quay.io/centos-bootc/bootc-image-builder:latest").
-
-## Building The Image
-
-### `just build`
-
-Builds a container image using Podman.
-
-```bash
-just build $target_image $tag
+ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
 ```
 
-Arguments:
-- `$target_image`: The tag you want to apply to the image (default: `$image_name`).
-- `$tag`: The tag for the image (default: `$default_tag`).
+---
 
-## Building and Running Virtual Machines and ISOs
+## Step 9 — Rebase your system to the custom image
 
-The below commands all build QCOW2 images. To produce or use a different type of image, substitute in the command with that type in the place of `qcow2`. The available types are `qcow2`, `iso`, and `raw`.
-
-### `just build-qcow2`
-
-Builds a QCOW2 virtual machine image.
+From a running Bazzite install, perform a two-step rebase. The first step installs your signing key; the second switches to the verified signed image.
 
 ```bash
-just build-qcow2 $target_image $tag
+# Step 1 — rebase to unsigned to pull in your signing key
+rpm-ostree rebase ostree-unverified-registry:ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
+
+# Reboot
+systemctl reboot
+
+# Step 2 — switch to the signed image
+rpm-ostree rebase ostree-image-signed:docker://ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
+
+# Reboot
+systemctl reboot
 ```
 
-### `just rebuild-qcow2`
-
-Rebuilds a QCOW2 virtual machine image.
+After the second reboot, confirm with:
 
 ```bash
-just rebuild-vm $target_image $tag
+rpm-ostree status
+# Should show: ostree-image-signed:docker://ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
 ```
 
-### `just run-vm-qcow2`
-
-Runs a virtual machine from a QCOW2 image.
+Then authenticate Tailscale:
 
 ```bash
-just run-vm-qcow2 $target_image $tag
+sudo tailscale up
+# Follow the URL printed to add this device to your tailnet
 ```
 
-### `just spawn-vm`
+---
 
-Runs a virtual machine using systemd-vmspawn.
+## How updates work after setup
 
-```bash
-just spawn-vm rebuild="0" type="qcow2" ram="6G"
+| What changes | How it propagates |
+|---|---|
+| Bazzite base image (kernel, NVIDIA drivers, packages) | Daily GHA cron rebuilds your image on top of the new `bazzite-gnome-nvidia:stable` digest |
+| Your `build.sh` customisations | Re-applied on every rebuild — always baked fresh into the new layer |
+| Template build infrastructure (`build.yml` etc.) | `wei/pull` opens a PR when upstream `image-template` changes |
+| Your running system | Bazzite's built-in update mechanism fetches the new `:latest` from GHCR on its normal schedule |
+
+---
+
+## Repository file summary
+
+```
+YOUR_REPO/
+├── .github/
+│   ├── pull.yml                  # wei/pull config — syncs template upstream
+│   └── workflows/
+│       └── build.yml             # GHA workflow — daily rebuild + push to GHCR
+├── build_files/
+│   └── build.sh                  # YOUR CUSTOMISATIONS — mounted via scratch stage, not copied into final image
+├── Containerfile                 # scratch AS ctx + FROM bazzite-gnome-nvidia:stable + calls build.sh
+├── cosign.pub                    # Public signing key — committed to repo
+└── Justfile                      # Change first line to your image name
 ```
 
-## File Management
+**`cosign.key` must never be committed.** It should be in `.gitignore` by default from the template. Double-check with `git status` before pushing.
 
-### `just check`
+---
 
-Checks the syntax of all `.just` files and the `Justfile`.
+## Troubleshooting
 
-### `just fix`
+**Build fails at `dnf5 remove`**
+Run the package verification command from Step 7 to confirm exact names. A package not present in the base image will cause a non-zero exit unless you add `|| true`.
 
-Fixes the syntax of all `.just` files and the `Justfile`.
+**`wei/pull` is overwriting my Containerfile**
+Switch `mergeMethod` from `hardreset` to `merge` in `.github/pull.yml`. Never use `hardreset` when your customisation branch and the tracked branch are the same.
 
-### `just clean`
+**Scheduled builds stop running**
+GitHub suspends cron workflows after 60 days of repo inactivity. `wei/pull` prevents this by generating periodic PR activity. If you removed `wei/pull`, add a keepalive workflow or make occasional commits.
 
-Cleans the repository by removing build artifacts.
-
-### `just lint`
-
-Runs shell check on all Bash scripts.
-
-### `just format`
-
-Runs shfmt on all Bash scripts.
-
-## Additional resources
-
-For additional driver support, ublue maintains a set of scripts and container images available at [ublue-akmod](https://github.com/ublue-os/akmods). These images include the necessary scripts to install multiple kernel drivers within the container (Nvidia, OpenRazer, Framework...). The documentation provides guidance on how to properly integrate these drivers into your container image.
-
-## Community Examples
-
-These are images derived from this template (or similar enough to this template). Reference them when building your image!
-
-- [m2Giles' OS](https://github.com/m2giles/m2os)
-- [bOS](https://github.com/bsherman/bos)
-- [Homer](https://github.com/bketelsen/homer/)
-- [Amy OS](https://github.com/astrovm/amyos)
-- [VeneOS](https://github.com/Venefilyn/veneos)
+**System not picking up new image version**
+Run `ujust update` or `rpm-ostree upgrade` manually. The system checks for updates on its own schedule; this forces an immediate check.
