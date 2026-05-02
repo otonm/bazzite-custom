@@ -11,8 +11,12 @@ dnf5 remove -y --no-autoremove \
 # Waydroid is not present on Nvidia builds — suppress failure if absent
 dnf5 remove -y --no-autoremove waydroid waydroid-selinux 2>/dev/null || true
 
-### Install packages / enable services
+# Install packages / enable services
 dnf5 install -y tmux
+
+dnf5 autoremove -y
+
+dnf5 clean all
 
 # Tailscale is already installed in the bazzite base image but its systemd
 # service is shipped disabled by default. Enable it here so it starts on boot.
@@ -26,5 +30,3 @@ sed -i \
     -e '/com\.valvesoftware\.Steam/d' \
     -e '/net\.lutris\.Lutris/d' \
     /usr/share/ublue-os/flatpak-blocklist 2>/dev/null || true
-
-dnf5 clean all
