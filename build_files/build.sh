@@ -11,8 +11,10 @@ dnf5 remove -y --no-autoremove \
 # Waydroid is not present on Nvidia builds — suppress failure if absent
 dnf5 remove -y --no-autoremove waydroid waydroid-selinux 2>/dev/null || true
 
-# Install packages / enable services
-dnf5 install -y tmux
+# Remove leftover desktop entries for removed packages
+rm -f \
+    /usr/share/applications/waydroid-container-restart.desktop \
+    /usr/share/applications/bazzite-steam-bpm.desktop
 
 dnf5 autoremove -y
 
