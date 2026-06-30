@@ -14,12 +14,9 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_DESC: "My custom Bazzite image based on bazzite-gnome-nvidia, without Steam, Lutris, and Waydroid. Tailscale enabled by default."
-  IMAGE_KEYWORDS: "bootc,ublue,universal-blue,bazzite,nvidia,gnome"
   IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/120078124?s=200&v=4"  # Put your own image here for a fancy profile on https://artifacthub.io/!
   IMAGE_NAME: "${{ github.event.repository.name }}"  # output image name, usually same as repo name
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
-  DEFAULT_TAG: "latest"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
@@ -35,6 +32,23 @@ jobs:
       packages: write
       id-token: write
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Default variant: GNOME + NVIDIA, published as :latest
+          - variant: default
+            containerfile: Containerfile
+            tag: latest
+            desc: "Custom Bazzite (GNOME/NVIDIA) without Steam, Lutris, Waydroid. Tailscale enabled by default."
+            keywords: "bootc,ublue,universal-blue,bazzite,nvidia,gnome"
+          # Beelink variant: KDE + AMD, no nvidia, OpenRazer support, published as :beelink
+          - variant: beelink
+            containerfile: Containerfile.beelink
+            tag: beelink
+            desc: "Custom Bazzite (KDE/AMD) for Beelink mini-PCs: no nvidia, AMD tools, Razer Basilisk V3 Pro support, Tailscale enabled."
+            keywords: "bootc,ublue,universal-blue,bazzite,kde,amd"
+
     steps:
       - name: Prepare environment
         run: |
@@ -49,6 +63,18 @@ jobs:
       # This is optional, but if you see that your builds are way too big for the runners, you can enable this by uncommenting the following lines:
       - name: Maximize build space
         uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
+
+      # The OpenRazer kmod must match the base image's exact kernel. Derive the
+      # akmods cache image tag from bazzite:stable so it never goes stale.
+      - name: Derive akmods tag (beelink)
+        if: matrix.variant == 'beelink'
+        run: |
+          set -x
+          BASE="ghcr.io/ublue-os/bazzite:stable"
+          KV=$(podman run --rm "$BASE" rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}' kernel-core)
+          FV=$(podman run --rm "$BASE" rpm -E %fedora)
+          # KERNEL_FLAVOR is "ogc" for Bazzite (the kernel NVRA already embeds it).
+          echo "AKMODS_TAG=ogc-${FV}-${KV}" >> "${GITHUB_ENV}"
 
       - name: Get current date
         id: date
@@ -68,23 +94,22 @@ jobs:
           # This generates all the tags for your image, you can add custom tags here too!
           # Default tags are "$DEFAULT_TAG" and "$DEFAULT_TAG.$date".
           tags: |
-            type=raw,value=${{ env.DEFAULT_TAG }}
-            type=raw,value=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
-            type=raw,value={{date 'YYYYMMDD'}}
-            type=sha,enable=${{ github.event_name == 'pull_request' }}
-            type=ref,event=pr
+            type=raw,value=${{ matrix.tag }}
+            type=raw,value=${{ matrix.tag }}.{{date 'YYYYMMDD'}}
+            type=sha,prefix=${{ matrix.tag }}-,enable=${{ github.event_name == 'pull_request' }}
+            type=ref,prefix=${{ matrix.tag }}-pr-,event=pr
           labels: |
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
             org.opencontainers.image.created=${{ steps.date.outputs.date }}
-            org.opencontainers.image.description=${{ env.IMAGE_DESC }}
+            org.opencontainers.image.description=${{ matrix.desc }}
             org.opencontainers.image.documentation=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
             org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/Containerfile
             org.opencontainers.image.title=${{ env.IMAGE_NAME }}
             org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/tree/${{ github.sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
-            org.opencontainers.image.version=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
+            org.opencontainers.image.version=${{ matrix.tag }}.{{date 'YYYYMMDD'}}
             io.artifacthub.package.deprecated=false
-            io.artifacthub.package.keywords=${{ env.IMAGE_KEYWORDS }}
+            io.artifacthub.package.keywords=${{ matrix.keywords }}
             io.artifacthub.package.license=Apache-2.0
             io.artifacthub.package.logo-url=${{ env.IMAGE_LOGO_URL }}
             io.artifacthub.package.prerelease=false
@@ -97,9 +122,11 @@ jobs:
         uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
         with:
           containerfiles: |
-            ./Containerfile
-          # Postfix image name with -custom to make it a little more descriptive
-          # Syntax: https://docs.github.com/en/actions/learn-github-actions/expressions#format
+            ./${{ matrix.containerfile }}
+          # AKMODS_TAG is only set/consumed by the beelink variant; empty and
+          # ignored for the default Containerfile.
+          build-args: |
+            AKMODS_TAG=${{ env.AKMODS_TAG }}
           image: ${{ env.IMAGE_NAME }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}

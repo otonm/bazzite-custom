@@ -20,7 +20,8 @@ on:
       - main
     paths:
       - './disk_config/disk.toml'
-      - './disk_config/iso.toml'
+      - './disk_config/iso-gnome.toml'
+      - './disk_config/iso-kde.toml'
       - './.github/workflows/build-disk.yml'
 
 env:
@@ -41,6 +42,14 @@ jobs:
       fail-fast: false
       matrix:
         disk-type: ["qcow2", "anaconda-iso"]
+        variant: [default, beelink]
+        include:
+          - variant: default
+            tag: latest
+            iso-config: ./disk_config/iso-gnome.toml
+          - variant: beelink
+            tag: beelink
+            iso-config: ./disk_config/iso-kde.toml
     permissions:
       contents: read
       packages: read
@@ -82,8 +91,8 @@ jobs:
         uses: osbuild/bootc-image-builder-action@main
         with:
           builder-image: ${{ env.BIB_IMAGE }}
-          config-file: ${{ matrix.disk-type == 'anaconda-iso' && './disk_config/iso.toml' || './disk_config/disk.toml' }}
-          image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}
+          config-file: ${{ matrix.disk-type == 'anaconda-iso' && matrix.iso-config || './disk_config/disk.toml' }}
+          image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.tag }}
           chown: ${{ env.USER_UID }}:${{ env.USER_GID }}
           types: ${{ matrix.disk-type }}
           additional-args: --use-librepo=True
@@ -92,6 +101,7 @@ jobs:
         if: inputs.upload-to-s3 != true && github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: ${{ matrix.variant }}-${{ env.DISK_TYPE }}
           path: ${{ steps.build.outputs.output-directory }}
           if-no-files-found: error
           retention-days: 0

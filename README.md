@@ -1,319 +1,208 @@
-# Custom Bazzite Image Setup Guide
+# bazzite-custom
 
-Custom image based on `bazzite-gnome-nvidia` with Steam, Lutris, and Waydroid removed.
-Built and published via GitHub Actions to GHCR, auto-rebuilds when the upstream Bazzite image updates.
+Two custom [Bazzite](https://bazzite.gg) images, built and signed by GitHub Actions, published to GHCR, and auto-rebuilt daily on top of the latest upstream Bazzite.
 
----
+Both variants live in one GHCR package — `ghcr.io/otonm/bazzite-custom` — under different tags:
 
-## Overview
+| Tag | Base image | Desktop / GPU | Built from |
+|---|---|---|---|
+| `:latest` | `bazzite-gnome-nvidia:stable` | GNOME / NVIDIA | `Containerfile` + `build_files/build.sh` |
+| `:beelink` | `bazzite:stable` | KDE / AMD (no nvidia) | `Containerfile.beelink` + `build_files/build-beelink.sh` |
 
-The approach uses [`ublue-os/image-template`](https://github.com/ublue-os/image-template) as a starting point. The workflow:
+**`:latest`** — Steam, Lutris, Waydroid removed; Tailscale enabled.
 
-1. Your GitHub repo holds a `Containerfile` and `build.sh`
-2. GitHub Actions builds a new OCI image and pushes it to GHCR daily
-3. Each build pulls the latest `bazzite-gnome-nvidia:stable` digest, so upstream changes are automatically incorporated
-4. `wei/pull` keeps the build infrastructure (GitHub Actions workflow files) in sync with the upstream template
-5. Your running system rebases to your custom image and updates normally via Bazzite's built-in update mechanism
+**`:beelink`** — for Beelink (and other AMD) mini-PCs: KDE Plasma, full AMD CPU+iGPU stack, no nvidia. Adds AMD diagnostic tools (`radeontop`, `nvtop`, `vulkan-tools`, `libva-utils`) and **Razer Basilisk V3 Pro** support (OpenRazer + Polychromatic). Removes Steam, Lutris, Waydroid, Sunshine, and the default emulation/launcher Flatpaks (RetroDeck, ES-DE, Heroic, Bottles, ProtonUp — all reinstallable from Flathub). The Discourse community launcher is removed. Tailscale enabled.
 
 ---
 
-## Prerequisites
+## How it works
 
-- A GitHub account
-- `cosign` installed locally ([install instructions](https://docs.sigstore.dev/cosign/system_config/installation/))
-- A machine running Bazzite (or any Fedora Atomic desktop) for the final rebase step
+- **One matrix, both images** — `.github/workflows/build.yml` builds and signs both tags from `main` in a matrix. GitHub runs scheduled workflows only on the **default branch**, so building both from `main` is what lets both auto-rebuild.
+- **OpenRazer on atomic** — DKMS can't build modules on an immutable OS, so the beelink image bakes in a prebuilt `kmod-openrazer` matched to Bazzite's custom `ogc` kernel, pulled from `ghcr.io/ublue-os/akmods`. The CI derives the exact akmods tag from the base image on every build so it never goes stale.
+- **Signing** — each image is signed with cosign (`cosign.pub` is committed; the private key lives in the `SIGNING_SECRET` repo secret).
+
+### Automatic updates
+
+- **Image-level (this repo):** the daily cron in `build.yml` (`0 6 * * *`) rebuilds **both** tags on the newest upstream Bazzite — kernel, drivers, security fixes.
+- **System-level (your machine):** Bazzite auto-updates installed systems via `ublue-update` + staged `bootc`/`rpm-ostree` upgrades, on by default. Force a check with `ujust update`; inspect the timer with `systemctl status ublue-update.timer`.
 
 ---
 
-## Step 1 — Create the repository
+## Building the image
 
-1. Go to [https://github.com/ublue-os/image-template](https://github.com/ublue-os/image-template)
-2. Click **Use this template** → **Create a new repository**
-3. Name it whatever you want (e.g. `my-bazzite`). Keep all other settings as-is.
-4. Go to the **Actions** tab of the new repo and click the button to enable workflows.
-5. Clone the repo locally:
+### Via GitHub Actions (normal path)
+
+Push to `main`, or trigger **Actions → Build container image → Run workflow**. On a green run both tags are published:
+
+```
+ghcr.io/otonm/bazzite-custom:latest
+ghcr.io/otonm/bazzite-custom:beelink
+```
+
+(Pull requests build but do not push — safe for review.)
+
+### Locally with podman
+
+Requires `podman` and [`just`](https://github.com/casey/just).
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME
-cd YOUR_REPO_NAME
+just build                # default (GNOME/NVIDIA) -> localhost/bazzite-custom:latest
+just build-beelink        # beelink  (KDE/AMD)     -> localhost/bazzite-custom:beelink
 ```
+
+> The local beelink build uses the fallback `AKMODS_TAG` baked into `Containerfile.beelink`. If a build fails because the OpenRazer kmod doesn't match the current kernel, update that `ARG` to the current tag (see [Troubleshooting](#troubleshooting)).
 
 ---
 
-## Step 2 — Generate cosign signing keys
+## Building an installer ISO
 
-Container signing is required — builds will fail without it.
+The ISO is an Anaconda installer produced by [bootc-image-builder](https://github.com/osbuild/bootc-image-builder). It embeds the chosen image and, on first boot, points the installed system at the registry tag for updates (see the kickstart in `disk_config/iso-kde.toml` / `iso-gnome.toml`).
+
+### Option A — GitHub Actions (recommended)
+
+1. Make sure the image is published first (the build above is green).
+2. Go to **Actions → Build disk images → Run workflow**, choose platform **amd64**.
+3. When it finishes, download the artifact from the run:
+   - **`beelink-anaconda-iso`** → the Beelink/KDE installer ISO
+   - `default-anaconda-iso` → the GNOME/NVIDIA installer ISO
+   - (`*-qcow2` artifacts are VM disk images, not installers.)
+
+### Option B — Locally with podman + just
+
+Requires `podman`, `just`, and enough free disk (~20 GB). Build the container first, then the ISO:
 
 ```bash
-cosign generate-key-pair
-# Do NOT enter a password when prompted, just press Enter.
-# This produces cosign.key (private) and cosign.pub (public).
+# Beelink / KDE
+just build-beelink
+just build-iso-beelink localhost/bazzite-custom beelink
+# -> output/bootiso/install.iso
+
+# GNOME / NVIDIA
+just build
+just build-iso-gnome localhost/bazzite-custom latest
+# -> output/bootiso/install.iso
 ```
 
-Add the private key to GitHub:
-
-- Go to your repo → **Settings** → **Secrets and Variables** → **Actions**
-- Click **New repository secret**
-- Name: `SIGNING_SECRET`
-- Value: paste the full contents of `cosign.key`
-
-Commit the public key (never commit `cosign.key`):
+You can smoke-test an ISO in a VM without writing it to USB:
 
 ```bash
-git add cosign.pub
-# Do NOT git add cosign.key
+just run-vm-iso localhost/bazzite-custom beelink   # opens a browser-based QEMU console
 ```
 
 ---
 
-## Step 3 — Edit the Containerfile
+## Installing the system from the ISO
 
-The template uses a multi-stage build pattern where `build_files` are mounted into the build context via a `scratch` stage rather than copied into the final image layer. Only the base image `FROM` line needs to change:
+1. **Write the ISO to a USB stick** (replace `/dev/sdX` with your USB device — check with `lsblk`):
 
-```dockerfile
-# Allow build scripts to be referenced without being copied into the final image
-FROM scratch AS ctx
-COPY build_files /
+   ```bash
+   sudo dd if=output/bootiso/install.iso of=/dev/sdX bs=4M status=progress oflag=sync
+   ```
 
-# Base Image
-FROM ghcr.io/ublue-os/bazzite-gnome-nvidia:stable
+   Or use [Fedora Media Writer](https://fedoraproject.org/workstation/download), [Impression](https://flathub.org/apps/io.gitlab.adhami3310.Impression), or Ventoy.
 
-### MODIFICATIONS
-## make modifications desired in your image and install packages by modifying the build.sh script
-## the following RUN directive does all the things required to run "build.sh" as recommended.
+2. **Boot the target machine from the USB** (you may need to disable Secure Boot, or enroll the ublue/akmods MOK key when prompted).
 
-RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
-    --mount=type=cache,dst=/var/cache \
-    --mount=type=cache,dst=/var/log \
-    --mount=type=tmpfs,dst=/tmp \
-    /ctx/build.sh
+3. **Run through the Anaconda installer** — pick disk and timezone, create your user, install, then reboot and remove the USB. The installer lays down the embedded image and sets the system to track `ghcr.io/otonm/bazzite-custom:beelink` (or `:latest`) for future updates.
 
-### LINTING
-## Verify final image and contents are correct.
-RUN bootc container lint
-```
+4. **First boot:**
 
-The `scratch AS ctx` stage holds your `build_files` and mounts them at `/ctx` during the `RUN` step without adding them as a layer in the final image. The `--mount=type=cache` directives prevent dnf cache directories from bloating the image layer. `bootc container lint` at the end catches any writes to ostree-managed paths that would silently break on deploy.
+   ```bash
+   # Tailscale (both variants — already enabled, just authenticate)
+   sudo tailscale up
+
+   # Razer Basilisk V3 Pro (beelink only) — one-time group add, then re-login
+   sudo usermod -aG openrazer $USER
+   ```
+
+   After re-login, launch **Polychromatic** to configure the mouse.
 
 ---
 
-## Step 4 — Edit build.sh
+## Rebasing an existing Bazzite / Fedora Atomic system
 
-This is where all package customisation lives. The file is `build_files/build.sh`. Note the ordering convention: remove unwanted packages first, then install new ones, then clean.
+If you already run Bazzite and just want to switch to one of these images, rebase in two steps (the first pulls in the signing key, the second switches to the verified signed image):
 
 ```bash
-#!/bin/bash
-
-set -eoux pipefail
-
-### Remove gaming packages not wanted in this image
-dnf5 remove -y --no-autoremove \
-    steam \
-    steam-devices \
-    lutris
-
-# Waydroid is not present on Nvidia builds — suppress failure if absent
-dnf5 remove -y --no-autoremove waydroid 2>/dev/null || true
-
-### Install packages / enable services
-dnf5 install -y tmux
-
-# Tailscale is already installed in the bazzite base image but its systemd
-# service is shipped disabled by default. Enable it here so it starts on boot.
-# After first boot, run: sudo tailscale up
-systemctl enable tailscaled
-
-# Remove the Flatpak blocklist entries for Steam and Lutris.
-# Without this, bazzite-flatpak-manager would still block these apps from Flathub
-# at runtime even though the RPMs are gone.
-sed -i \
-    -e '/com\.valvesoftware\.Steam/d' \
-    -e '/net\.lutris\.Lutris/d' \
-    /usr/share/ublue-os/flatpak-blocklist 2>/dev/null || true
-
-dnf5 clean all
-```
-
-**Why remove before install:** if a remove fails mid-run, the install has not yet dirtied the layer. It also makes intent clearer — strip what is unwanted, then add what is needed.
-
-**Why `--no-autoremove`:** DNF5 would otherwise cascade-remove auto-installed dependencies. This flag restricts removal to only the named packages, protecting shared libraries used by other parts of the image.
-
-**Why `|| true` for waydroid:** Older Bazzite documentation marked Waydroid as unavailable on Nvidia builds. The package may not be present, so the command is allowed to fail silently.
-
-**Why edit the flatpak-blocklist:** Bazzite ships `/usr/share/ublue-os/flatpak-blocklist` which `bazzite-flatpak-manager` reads at every boot to block certain Flatpaks from Flathub. Without removing these entries, Steam and Lutris would still be blocked from Flathub installation even after the RPMs are removed. Omit the `sed` lines if you want them blocked entirely.
-
----
-
-## Step 5 — Configure the build workflow
-
-The `on:` triggers in the workflow are already correct as-is from the template — `pull_request` builds without pushing (safe for review), the daily cron picks up upstream Bazzite changes, `push` to `main` triggers on your own changes, and `workflow_dispatch` allows manual runs.
-
-The one cleanup worth making is in the `concurrency` block. The template references `inputs.brand_name` and `inputs.stream_name` which are only populated for `workflow_call` events, not used here. They evaluate to empty strings harmlessly but leave two trailing hyphens in the group name:
-
-```yaml
-# Before (template default — works but untidy)
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
-  cancel-in-progress: true
-
-# After (clean)
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
-  cancel-in-progress: true
-```
-
-### Update the image metadata
-
-The `env:` block at the top of `build.yml` contains metadata used for ArtifactHub listings and OCI image labels. Update the three fields that still have template defaults:
-
-```yaml
-env:
-  IMAGE_DESC: "My custom Bazzite image based on bazzite-gnome-nvidia, without Steam, Lutris, and Waydroid. Tailscale enabled by default."
-  IMAGE_KEYWORDS: "bootc,ublue,universal-blue,bazzite,nvidia,gnome"
-  IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/YOUR_GITHUB_USER_ID"  # your GitHub avatar, or any public image URL
-  IMAGE_NAME: "${{ github.event.repository.name }}"  # leave as-is — derived from repo name automatically
-  IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # leave as-is
-  DEFAULT_TAG: "latest"  # leave as-is
-```
-
-`IMAGE_LOGO_URL` only affects your listing on [artifacthub.io](https://artifacthub.io) if you choose to register there. Your GitHub avatar URL follows the pattern `https://avatars.githubusercontent.com/u/YOUR_NUMERIC_USER_ID`. Find your numeric user ID at `https://api.github.com/users/YOUR_USERNAME`.
-
----
-
-## Step 6 — Set up wei/pull for template sync
-
-`wei/pull` keeps your build infrastructure (`.github/workflows/build.yml` and related files) in sync with the upstream `ublue-os/image-template` when they push improvements.
-
-**This is separate from tracking Bazzite image updates** — the daily cron handles that. `wei/pull` is about keeping the CI/CD tooling itself current.
-
-### Install the app
-
-Install the [Pull GitHub App](https://github.com/apps/pull) and grant it access to your repo.
-
-### Add the config
-
-Create `.github/pull.yml`:
-
-```yaml
-version: "1"
-rules:
-  - base: main
-    upstream: ublue-os:image-template:main
-    mergeMethod: merge   # creates a PR for you to review before merging
-    mergeUnstable: false
-```
-
-**Use `mergeMethod: merge`, not `hardreset`.** The `hardreset` method would overwrite your `Containerfile` and `build.sh` whenever the upstream template changes. With `merge`, you get a PR that you can review and resolve conflicts against your customisations manually.
-
-**wei/pull also replaces the keepalive workflow.** GitHub suspends scheduled workflows after 60 days of repo inactivity. Since wei/pull creates automated PRs periodically, it counts as activity and keeps the cron alive. You do not need a separate keepalive workflow.
-
----
-
-## Step 7 — Verify package names on the actual image
-
-Before pushing, confirm the package names exist in `bazzite-gnome-nvidia`. Run this against the live image:
-
-```bash
-podman run --rm ghcr.io/ublue-os/bazzite-gnome-nvidia:stable \
-    rpm -qa | grep -E 'steam|lutris|waydroid'
-```
-
-Expected output should include `steam`, `steam-devices`, `lutris`. If any name differs, update `build.sh` accordingly.
-
----
-
-## Step 8 — Push and verify the build
-
-Commit and push everything:
-
-```bash
-git add Containerfile build_files/build.sh .github/workflows/build.yml .github/pull.yml cosign.pub
-git commit -m "Initial setup: bazzite-gnome-nvidia without Steam, Lutris, Waydroid; Tailscale enabled"
-git push
-```
-
-Go to the **Actions** tab of your repo. The workflow should trigger immediately on the push. Wait for a green checkmark — this confirms your image has been built and pushed to GHCR at:
-
-```
-ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
-```
-
----
-
-## Step 9 — Rebase your system to the custom image
-
-From a running Bazzite install, perform a two-step rebase. The first step installs your signing key; the second switches to the verified signed image.
-
-```bash
-# Step 1 — rebase to unsigned to pull in your signing key
-rpm-ostree rebase ostree-unverified-registry:ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
-
-# Reboot
+# Beelink (KDE/AMD). For the GNOME/NVIDIA image, use :latest instead of :beelink.
+rpm-ostree rebase ostree-unverified-registry:ghcr.io/otonm/bazzite-custom:beelink
 systemctl reboot
 
-# Step 2 — switch to the signed image
-rpm-ostree rebase ostree-image-signed:docker://ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
-
-# Reboot
+rpm-ostree rebase ostree-image-signed:docker://ghcr.io/otonm/bazzite-custom:beelink
 systemctl reboot
 ```
 
-After the second reboot, confirm with:
+Confirm:
 
 ```bash
-rpm-ostree status
-# Should show: ostree-image-signed:docker://ghcr.io/YOUR_USERNAME/YOUR_REPO_NAME:latest
-```
-
-Then authenticate Tailscale:
-
-```bash
-sudo tailscale up
-# Follow the URL printed to add this device to your tailnet
+rpm-ostree status   # should show ostree-image-signed:docker://ghcr.io/otonm/bazzite-custom:beelink
 ```
 
 ---
 
-## How updates work after setup
+## Razer Basilisk V3 Pro (beelink)
 
-| What changes | How it propagates |
-|---|---|
-| Bazzite base image (kernel, NVIDIA drivers, packages) | Daily GHA cron rebuilds your image on top of the new `bazzite-gnome-nvidia:stable` digest |
-| Your `build.sh` customisations | Re-applied on every rebuild — always baked fresh into the new layer |
-| Template build infrastructure (`build.yml` etc.) | `wei/pull` opens a PR when upstream `image-template` changes |
-| Your running system | Bazzite's built-in update mechanism fetches the new `:latest` from GHCR on its normal schedule |
+- The kernel module ships baked in (prebuilt akmod, no DKMS), with `openrazer-daemon`, `python3-openrazer`, and the **Polychromatic** GUI.
+- `openrazer-daemon` is a **per-user** D-Bus service auto-started by Polychromatic — there is no system service to enable.
+- One-time setup after install: `sudo usermod -aG openrazer $USER`, then re-login.
+- OpenRazer controls the mouse over **wired USB or the 2.4 GHz dongle** (this mouse is PID `1532:00AB`) — **not** over Bluetooth.
 
 ---
 
-## Repository file summary
+## Maintenance
+
+### Signing key
+
+Container signing is required — builds fail without it. The keypair was created with `cosign generate-key-pair` (no password); `cosign.pub` is committed, and the contents of `cosign.key` are stored as the repo secret **`SIGNING_SECRET`** (Settings → Secrets and variables → Actions). Never commit `cosign.key` (it's in `.gitignore`).
+
+### Template sync (wei/pull)
+
+`.github/pull.yml` keeps the build infrastructure in sync with upstream [`ublue-os/image-template`](https://github.com/ublue-os/image-template) via the [Pull app](https://github.com/apps/pull), opening a PR (`mergeMethod: merge`) rather than overwriting customisations. It also generates periodic activity that keeps the scheduled cron from being suspended after 60 days of inactivity.
+
+---
+
+## Repository layout
 
 ```
-YOUR_REPO/
-├── .github/
-│   ├── pull.yml                  # wei/pull config — syncs template upstream
-│   └── workflows/
-│       └── build.yml             # GHA workflow — daily rebuild + push to GHCR
+bazzite-custom/
+├── .github/workflows/
+│   ├── build.yml             # matrix build + sign + push BOTH tags (daily cron + push + dispatch)
+│   └── build-disk.yml        # build QCOW2 + ISO for both variants (manual dispatch)
 ├── build_files/
-│   └── build.sh                  # YOUR CUSTOMISATIONS — mounted via scratch stage, not copied into final image
-├── Containerfile                 # scratch AS ctx + FROM bazzite-gnome-nvidia:stable + calls build.sh
-├── cosign.pub                    # Public signing key — committed to repo
-└── Justfile                      # Change first line to your image name
+│   ├── build.sh              # default (GNOME/NVIDIA) customisations
+│   └── build-beelink.sh      # beelink (KDE/AMD) customisations + Razer/OpenRazer
+├── disk_config/
+│   ├── disk.toml             # QCOW2/raw filesystem config
+│   ├── iso-gnome.toml        # Anaconda ISO config — kickstart switches to :latest
+│   └── iso-kde.toml          # Anaconda ISO config — kickstart switches to :beelink
+├── Containerfile             # default image (FROM bazzite-gnome-nvidia)
+├── Containerfile.beelink     # beelink image (FROM bazzite + akmods stage for OpenRazer)
+├── Justfile                  # local build / ISO / VM recipes
+├── cosign.pub                # public signing key (committed)
+└── cosign.key                # private key — NEVER commit (gitignored)
 ```
-
-**`cosign.key` must never be committed.** It should be in `.gitignore` by default from the template. Double-check with `git status` before pushing.
 
 ---
 
 ## Troubleshooting
 
-**Build fails at `dnf5 remove`**
-Run the package verification command from Step 7 to confirm exact names. A package not present in the base image will cause a non-zero exit unless you add `|| true`.
+**Beelink build fails on the OpenRazer kmod (`kmod-openrazer-*.rpm` not found / module won't load).**
+The akmods tag must match the base kernel. CI derives it automatically; for local builds, find the current kernel and bump the `AKMODS_TAG` `ARG` in `Containerfile.beelink`:
 
-**`wei/pull` is overwriting my Containerfile**
-Switch `mergeMethod` from `hardreset` to `merge` in `.github/pull.yml`. Never use `hardreset` when your customisation branch and the tracked branch are the same.
+```bash
+podman run --rm ghcr.io/ublue-os/bazzite:stable rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core
+# AKMODS_TAG = ogc-<fedora>-<that kernel string>, e.g. ogc-44-7.0.9-ogc3.2.fc44.x86_64
+podman run --rm ghcr.io/ublue-os/akmods:<that tag> ls /rpms/kmods   # confirm kmod-openrazer is present
+```
 
-**Scheduled builds stop running**
-GitHub suspends cron workflows after 60 days of repo inactivity. `wei/pull` prevents this by generating periodic PR activity. If you removed `wei/pull`, add a keepalive workflow or make occasional commits.
+**Razer mouse not detected.** Confirm it's connected via the dongle or cable (not Bluetooth), that you ran `usermod -aG openrazer $USER` and re-logged in, and that your PID shows up: `lsusb | grep 1532`.
 
-**System not picking up new image version**
-Run `ujust update` or `rpm-ostree upgrade` manually. The system checks for updates on its own schedule; this forces an immediate check.
+**Build fails at `dnf5 remove`.** A package name may differ on the base image. Verify against the live image and adjust the relevant `build*.sh`:
+
+```bash
+podman run --rm ghcr.io/ublue-os/bazzite:stable rpm -qa | grep -iE 'steam|lutris|sunshine'
+```
+
+**System not picking up a new image.** Run `ujust update` (or `rpm-ostree upgrade`) to force an immediate check.
+
+**Scheduled builds stopped.** GitHub suspends cron workflows after 60 days of inactivity; wei/pull activity normally prevents this. Otherwise push a commit or run the workflow manually.
