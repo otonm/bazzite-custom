@@ -53,29 +53,24 @@ dnf5 install -y --setopt=install_weak_deps=False \
     vulkan-tools \
     libva-utils
 
-### Razer Basilisk V3 Pro support (OpenRazer + Polychromatic)
-# Kernel module: prebuilt against the ogc kernel via the akmods stage. No DKMS.
-# Locate it with find (robust to the common/ vs kmods/ subdir naming).
-KMOD_OPENRAZER=$(find /run/akmods-rpms -name 'kmod-openrazer-*.rpm' | head -1)
-if [[ -z "${KMOD_OPENRAZER}" ]]; then
-    echo "ERROR: kmod-openrazer RPM not found under /run/akmods-rpms" >&2
-    find /run/akmods-rpms -name '*.rpm' >&2
-    exit 1
-fi
-dnf5 install -y --setopt=install_weak_deps=False "${KMOD_OPENRAZER}"
+### Razer Basilisk V3 Pro support — bake in what `ujust install-openrazer` does.
+# Add the OpenRazer OBS repo (left in place, as the ujust recipe does) and
+# install the daemon; the repo provides the kernel module via the daemon's deps.
+curl -Lo /etc/yum.repos.d/hardware:razer.repo https://openrazer.github.io/hardware:razer.repo
+dnf5 install -y openrazer-daemon
 
-# Userspace daemon + GUI from the OpenRazer OBS repo. Never install
-# openrazer-meta — it would pull the DKMS kmod, which fails on atomic.
-dnf5 config-manager addrepo --from-repofile=https://openrazer.github.io/hardware:razer.repo
-dnf5 install -y --setopt=install_weak_deps=False \
-    openrazer-daemon \
-    python3-openrazer \
-    polychromatic
-# Remove the repo file so a rebased user machine never tries to layer the DKMS kmod.
-rm -f /etc/yum.repos.d/*azer*.repo
-# openrazer-daemon is a per-user D-Bus service auto-started by Polychromatic —
-# do NOT enable a system service. The openrazer group + udev rules ship with the
-# packages; add your user at first boot: `sudo usermod -aG openrazer $USER`.
+# Ensure the plugdev group exists (the ujust recipe copies it from /lib/group).
+# Add your user to it at first boot: `sudo usermod -aG plugdev $USER`.
+if ! grep -q '^plugdev:' /etc/group; then
+    grep '^plugdev:' /lib/group >> /etc/group || true
+fi
+
+# Install the Polychromatic GUI on first boot (the frontend ujust offers as a
+# Flatpak) by adding it to Bazzite's default flatpak install list.
+if [[ -f "${FLATPAK_LIST}" ]]; then
+    grep -qxF 'app.polychromatic.controller' "${FLATPAK_LIST}" \
+        || echo 'app.polychromatic.controller' >> "${FLATPAK_LIST}"
+fi
 
 dnf5 clean all
 

@@ -1,28 +1,17 @@
 # Beelink variant: KDE Plasma, AMD CPU + Radeon iGPU, no nvidia.
 # Built from main via the build.yml matrix and published as the :beelink tag.
 
-# OpenRazer kernel module, prebuilt against Bazzite's custom "ogc" kernel.
-# AKMODS_TAG must match the base image kernel (format: <flavor>-<fedora>-<kernel>).
-# Declared before the first FROM so it is a GLOBAL build arg usable in FROM below.
-# CI derives and overrides this per build; the default below is a fallback.
-ARG AKMODS_TAG="ogc-44-7.0.9-ogc3.2.fc44.x86_64"
-
 # Allow build scripts to be referenced without being copied into the final image
 FROM scratch AS ctx
 COPY build_files /
-
-FROM ghcr.io/ublue-os/akmods:${AKMODS_TAG} AS akmods
 
 # Base Image — KDE, AMD/Intel, no nvidia
 FROM ghcr.io/ublue-os/bazzite:stable
 
 ### MODIFICATIONS
 ## All package customisation lives in build_files/build-beelink.sh.
-## The akmods stage above provides the prebuilt kmod-openrazer RPM at /run/akmods-rpms
-## (kept out from under the /tmp tmpfs mount, which would otherwise shadow it).
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
-    --mount=type=bind,from=akmods,source=/rpms,target=/run/akmods-rpms \
     --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/log \
     --mount=type=tmpfs,dst=/tmp \

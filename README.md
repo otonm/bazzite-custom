@@ -18,7 +18,7 @@ Both variants live in one GHCR package — `ghcr.io/otonm/bazzite-custom` — un
 ## How it works
 
 - **One matrix, both images** — `.github/workflows/build.yml` builds and signs both tags from `main` in a matrix. GitHub runs scheduled workflows only on the **default branch**, so building both from `main` is what lets both auto-rebuild.
-- **OpenRazer on atomic** — DKMS can't build modules on an immutable OS, so the beelink image bakes in a prebuilt `kmod-openrazer` matched to Bazzite's custom `ogc` kernel, pulled from `ghcr.io/ublue-os/akmods`. The CI derives the exact akmods tag from the base image on every build so it never goes stale.
+- **OpenRazer** — the beelink image bakes in what Bazzite's `ujust install-openrazer` does: it adds the OpenRazer OBS repo and installs `openrazer-daemon`, sets up the `plugdev` group, and queues the Polychromatic GUI Flatpak for first boot.
 - **Signing** — each image is signed with cosign (`cosign.pub` is committed; the private key lives in the `SIGNING_SECRET` repo secret).
 
 ### Automatic updates
@@ -49,8 +49,6 @@ Requires `podman` and [`just`](https://github.com/casey/just).
 just build                # default (GNOME/NVIDIA) -> localhost/bazzite-custom:latest
 just build-beelink        # beelink  (KDE/AMD)     -> localhost/bazzite-custom:beelink
 ```
-
-> The local beelink build uses the fallback `AKMODS_TAG` baked into `Containerfile.beelink`. If a build fails because the OpenRazer kmod doesn't match the current kernel, update that `ARG` to the current tag (see [Troubleshooting](#troubleshooting)).
 
 ---
 
@@ -112,10 +110,10 @@ just run-vm-iso localhost/bazzite-custom beelink   # opens a browser-based QEMU 
    sudo tailscale up
 
    # Razer Basilisk V3 Pro (beelink only) — one-time group add, then re-login
-   sudo usermod -aG openrazer $USER
+   sudo usermod -aG plugdev $USER
    ```
 
-   After re-login, launch **Polychromatic** to configure the mouse.
+   After re-login, launch **Polychromatic** (installed automatically on first boot) to configure the mouse.
 
 ---
 
@@ -142,9 +140,9 @@ rpm-ostree status   # should show ostree-image-signed:docker://ghcr.io/otonm/baz
 
 ## Razer Basilisk V3 Pro (beelink)
 
-- The kernel module ships baked in (prebuilt akmod, no DKMS), with `openrazer-daemon`, `python3-openrazer`, and the **Polychromatic** GUI.
+- The image bakes in the same setup as Bazzite's `ujust install-openrazer`: the OpenRazer OBS repo + `openrazer-daemon`, the `plugdev` group, and the **Polychromatic** GUI Flatpak (installed on first boot).
 - `openrazer-daemon` is a **per-user** D-Bus service auto-started by Polychromatic — there is no system service to enable.
-- One-time setup after install: `sudo usermod -aG openrazer $USER`, then re-login.
+- One-time setup after install: `sudo usermod -aG plugdev $USER`, then re-login.
 - OpenRazer controls the mouse over **wired USB or the 2.4 GHz dongle** (this mouse is PID `1532:00AB`) — **not** over Bluetooth.
 
 ---
@@ -176,7 +174,7 @@ bazzite-custom/
 │   ├── iso-gnome.toml        # Anaconda ISO config — kickstart switches to :latest
 │   └── iso-kde.toml          # Anaconda ISO config — kickstart switches to :beelink
 ├── Containerfile             # default image (FROM bazzite-gnome-nvidia)
-├── Containerfile.beelink     # beelink image (FROM bazzite + akmods stage for OpenRazer)
+├── Containerfile.beelink     # beelink image (FROM bazzite:stable)
 ├── Justfile                  # local build / ISO / VM recipes
 ├── cosign.pub                # public signing key (committed)
 └── cosign.key                # private key — NEVER commit (gitignored)
@@ -186,16 +184,7 @@ bazzite-custom/
 
 ## Troubleshooting
 
-**Beelink build fails on the OpenRazer kmod (`kmod-openrazer-*.rpm` not found / module won't load).**
-The akmods tag must match the base kernel. CI derives it automatically; for local builds, find the current kernel and bump the `AKMODS_TAG` `ARG` in `Containerfile.beelink`:
-
-```bash
-podman run --rm ghcr.io/ublue-os/bazzite:stable rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core
-# AKMODS_TAG = ogc-<fedora>-<that kernel string>, e.g. ogc-44-7.0.9-ogc3.2.fc44.x86_64
-podman run --rm ghcr.io/ublue-os/akmods:<that tag> ls /rpms/kmods   # confirm kmod-openrazer is present
-```
-
-**Razer mouse not detected.** Confirm it's connected via the dongle or cable (not Bluetooth), that you ran `usermod -aG openrazer $USER` and re-logged in, and that your PID shows up: `lsusb | grep 1532`.
+**Razer mouse not detected.** Confirm it's connected via the dongle or cable (not Bluetooth), that you ran `sudo usermod -aG plugdev $USER` and re-logged in, and that your PID shows up: `lsusb | grep 1532`. If the kernel module is missing after an upstream kernel bump, re-run `ujust install-openrazer` on the running system.
 
 **Build fails at `dnf5 remove`.** A package name may differ on the base image. Verify against the live image and adjust the relevant `build*.sh`:
 
