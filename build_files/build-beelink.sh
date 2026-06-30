@@ -3,11 +3,12 @@
 set -eoux pipefail
 
 ### Remove gaming packages not wanted in this image
+# (Sunshine is not an RPM on the base — it's opt-in via `ujust setup-sunshine`,
+# so there is nothing to remove for it.)
 dnf5 remove -y --no-autoremove \
     steam \
     steam-devices \
-    lutris \
-    sunshine
+    lutris
 
 # Waydroid may be absent depending on the base — suppress failure if so
 dnf5 remove -y --no-autoremove waydroid waydroid-selinux 2>/dev/null || true
@@ -21,18 +22,27 @@ rm -f \
 
 dnf5 autoremove -y
 
+# Re-add the Bluetooth stack explicitly after autoremove so it is guaranteed
+# present and marked user-installed (autoremove can otherwise sweep it).
+dnf5 install -y --setopt=install_weak_deps=False \
+    bluez \
+    bluez-obexd \
+    bluedevil
+
 ### Trim default Flatpaks (emulation + game launchers).
-# These are removed from the default *install* list, NOT the blocklist, so the
-# user can still install them from Flathub later. Locate whichever ublue-os
-# system flatpak list contains them, then drop the entries.
-FLATPAK_LIST=$(grep -rls 'net\.retrodeck\.retrodeck' /usr/share/ublue-os /etc/ublue-os 2>/dev/null | head -1)
-if [[ -n "${FLATPAK_LIST}" ]]; then
+# Drop entries from Bazzite's default *install* list (consumed by
+# `ujust _install-system-flatpaks`), NOT the blocklist, so the user can still
+# install them from Flathub later. On the KDE desktop base only ProtonUp-Qt is
+# actually in this list; the rest are kept as forward-compat no-ops (they ship
+# only on the deck/handheld variant).
+FLATPAK_LIST=/usr/share/ublue-os/bazzite/flatpak/install
+if [[ -f "${FLATPAK_LIST}" ]]; then
     sed -i \
+        -e '/net\.davidotek\.pupgui2/d' \
         -e '/net\.retrodeck\.retrodeck/d' \
         -e '/org\.es_de\.frontend/d' \
         -e '/com\.heroicgameslauncher\.hgl/d' \
         -e '/com\.usebottles\.bottles/d' \
-        -e '/net\.davidotek\.pupgui2/d' \
         "${FLATPAK_LIST}"
 fi
 
@@ -45,8 +55,14 @@ dnf5 install -y --setopt=install_weak_deps=False \
 
 ### Razer Basilisk V3 Pro support (OpenRazer + Polychromatic)
 # Kernel module: prebuilt against the ogc kernel via the akmods stage. No DKMS.
-dnf5 install -y --setopt=install_weak_deps=False \
-    /tmp/akmods-rpms/kmods/kmod-openrazer-*.rpm
+# Locate it with find (robust to the common/ vs kmods/ subdir naming).
+KMOD_OPENRAZER=$(find /run/akmods-rpms -name 'kmod-openrazer-*.rpm' | head -1)
+if [[ -z "${KMOD_OPENRAZER}" ]]; then
+    echo "ERROR: kmod-openrazer RPM not found under /run/akmods-rpms" >&2
+    find /run/akmods-rpms -name '*.rpm' >&2
+    exit 1
+fi
+dnf5 install -y --setopt=install_weak_deps=False "${KMOD_OPENRAZER}"
 
 # Userspace daemon + GUI from the OpenRazer OBS repo. Never install
 # openrazer-meta — it would pull the DKMS kmod, which fails on atomic.

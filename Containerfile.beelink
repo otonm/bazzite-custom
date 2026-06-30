@@ -18,10 +18,11 @@ FROM ghcr.io/ublue-os/bazzite:stable
 
 ### MODIFICATIONS
 ## All package customisation lives in build_files/build-beelink.sh.
-## The akmods stage above provides the prebuilt kmod-openrazer RPM at /tmp/akmods-rpms.
+## The akmods stage above provides the prebuilt kmod-openrazer RPM at /run/akmods-rpms
+## (kept out from under the /tmp tmpfs mount, which would otherwise shadow it).
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
-    --mount=type=bind,from=akmods,source=/rpms,target=/tmp/akmods-rpms \
+    --mount=type=bind,from=akmods,source=/rpms,target=/run/akmods-rpms \
     --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/log \
     --mount=type=tmpfs,dst=/tmp \
