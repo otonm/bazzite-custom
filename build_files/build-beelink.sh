@@ -53,24 +53,10 @@ dnf5 install -y --setopt=install_weak_deps=False \
     vulkan-tools \
     libva-utils
 
-### Razer Basilisk V3 Pro support — bake in what `ujust install-openrazer` does.
-# Add the OpenRazer OBS repo (left in place, as the ujust recipe does) and
-# install the daemon; the repo provides the kernel module via the daemon's deps.
-curl -Lo /etc/yum.repos.d/hardware:razer.repo https://openrazer.github.io/hardware:razer.repo
-dnf5 install -y openrazer-daemon
-
-# Ensure the plugdev group exists (the ujust recipe copies it from /lib/group).
-# Add your user to it at first boot: `sudo usermod -aG plugdev $USER`.
-if ! grep -q '^plugdev:' /etc/group; then
-    grep '^plugdev:' /lib/group >> /etc/group || true
-fi
-
-# Install the Polychromatic GUI on first boot (the frontend ujust offers as a
-# Flatpak) by adding it to Bazzite's default flatpak install list.
-if [[ -f "${FLATPAK_LIST}" ]]; then
-    grep -qxF 'app.polychromatic.controller' "${FLATPAK_LIST}" \
-        || echo 'app.polychromatic.controller' >> "${FLATPAK_LIST}"
-fi
+# Razer Basilisk V3 Pro: OpenRazer is NOT installed here. Its kernel module is
+# DKMS-only and can only build against the running kernel, which doesn't exist
+# in a build container. After installing the system, run `ujust install-openrazer`
+# once (pick Polychromatic) and reboot — see the README.
 
 dnf5 clean all
 

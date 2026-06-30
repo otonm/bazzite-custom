@@ -11,14 +11,14 @@ Both variants live in one GHCR package — `ghcr.io/otonm/bazzite-custom` — un
 
 **`:latest`** — Steam, Lutris, Waydroid removed; Tailscale enabled.
 
-**`:beelink`** — for Beelink (and other AMD) mini-PCs: KDE Plasma, full AMD CPU+iGPU stack, no nvidia. Adds AMD diagnostic tools (`radeontop`, `nvtop`, `vulkan-tools`, `libva-utils`) and **Razer Basilisk V3 Pro** support (OpenRazer + Polychromatic). Removes Steam, Lutris, Waydroid, Sunshine, and the default emulation/launcher Flatpaks (RetroDeck, ES-DE, Heroic, Bottles, ProtonUp — all reinstallable from Flathub). The Discourse community launcher is removed. Tailscale enabled.
+**`:beelink`** — for Beelink (and other AMD) mini-PCs: KDE Plasma, full AMD CPU+iGPU stack, no nvidia. Adds AMD diagnostic tools (`radeontop`, `nvtop`, `vulkan-tools`, `libva-utils`). **Razer Basilisk V3 Pro** support is a one-command post-install step (`ujust install-openrazer` — see below). Removes Steam, Lutris, Waydroid, and the default launcher Flatpak (ProtonUp — reinstallable from Flathub). The Discourse community launcher is removed. Tailscale enabled.
 
 ---
 
 ## How it works
 
 - **One matrix, both images** — `.github/workflows/build.yml` builds and signs both tags from `main` in a matrix. GitHub runs scheduled workflows only on the **default branch**, so building both from `main` is what lets both auto-rebuild.
-- **OpenRazer** — the beelink image bakes in what Bazzite's `ujust install-openrazer` does: it adds the OpenRazer OBS repo and installs `openrazer-daemon`, sets up the `plugdev` group, and queues the Polychromatic GUI Flatpak for first boot.
+- **OpenRazer** — not baked in. Its kernel module is DKMS-only and can only build against the running kernel (impossible in a build container), so the image leaves Razer support to Bazzite's supported `ujust install-openrazer`, run once after install.
 - **Signing** — each image is signed with cosign (`cosign.pub` is committed; the private key lives in the `SIGNING_SECRET` repo secret).
 
 ### Automatic updates
@@ -109,11 +109,11 @@ just run-vm-iso localhost/bazzite-custom beelink   # opens a browser-based QEMU 
    # Tailscale (both variants — already enabled, just authenticate)
    sudo tailscale up
 
-   # Razer Basilisk V3 Pro (beelink only) — one-time group add, then re-login
-   sudo usermod -aG plugdev $USER
+   # Razer Basilisk V3 Pro (beelink only) — install OpenRazer + a GUI, then reboot
+   ujust install-openrazer   # choose "Polychromatic" when prompted
    ```
 
-   After re-login, launch **Polychromatic** (installed automatically on first boot) to configure the mouse.
+   `ujust install-openrazer` adds the OpenRazer repo, layers `openrazer-daemon` (building the module against your running kernel), adds you to the `plugdev` group, and installs the Polychromatic Flatpak. Reboot, then launch **Polychromatic** to configure the mouse.
 
 ---
 
@@ -140,9 +140,12 @@ rpm-ostree status   # should show ostree-image-signed:docker://ghcr.io/otonm/baz
 
 ## Razer Basilisk V3 Pro (beelink)
 
-- The image bakes in the same setup as Bazzite's `ujust install-openrazer`: the OpenRazer OBS repo + `openrazer-daemon`, the `plugdev` group, and the **Polychromatic** GUI Flatpak (installed on first boot).
-- `openrazer-daemon` is a **per-user** D-Bus service auto-started by Polychromatic — there is no system service to enable.
-- One-time setup after install: `sudo usermod -aG plugdev $USER`, then re-login.
+- OpenRazer is **not baked into the image** — its kernel module is DKMS-only and can only build against the running kernel, which doesn't exist in a build container. Use Bazzite's supported recipe once, after install:
+  ```bash
+  ujust install-openrazer   # choose Polychromatic when prompted, then reboot
+  ```
+  This adds the OpenRazer repo, layers `openrazer-daemon` (DKMS builds the module against your real kernel), adds you to the `plugdev` group, and installs the **Polychromatic** GUI Flatpak.
+- The mouse works as a normal HID mouse out of the box; the above adds RGB/DPI/button control.
 - OpenRazer controls the mouse over **wired USB or the 2.4 GHz dongle** (this mouse is PID `1532:00AB`) — **not** over Bluetooth.
 
 ---
@@ -168,7 +171,7 @@ bazzite-custom/
 │   └── build-disk.yml        # build QCOW2 + ISO for both variants (manual dispatch)
 ├── build_files/
 │   ├── build.sh              # default (GNOME/NVIDIA) customisations
-│   └── build-beelink.sh      # beelink (KDE/AMD) customisations + Razer/OpenRazer
+│   └── build-beelink.sh      # beelink (KDE/AMD) customisations
 ├── disk_config/
 │   ├── disk.toml             # QCOW2/raw filesystem config
 │   ├── iso-gnome.toml        # Anaconda ISO config — kickstart switches to :latest
