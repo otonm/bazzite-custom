@@ -20,6 +20,21 @@ rm -f \
     /usr/share/applications/bazzite-steam-bpm.desktop \
     /usr/share/applications/*discourse*.desktop
 
+### Remove hardware/tooling not used on this AMD/KDE box
+# Intel GPU drivers/utilities (AMD box), System76 laptop drivers, cockpit web
+# admin stack, plus xwiimote and fish per owner preference. Intel *wifi*
+# firmware is kept (re-added below) — only the Intel GPU drivers go.
+dnf5 remove -y --no-autoremove \
+    cockpit\* \
+    xwiimote-ng \
+    fish \
+    intel-opencl \
+    intel-vaapi-driver \
+    system76-driver \
+    system76-io \
+    kmod-system76-driver \
+    kmod-system76-io
+
 dnf5 autoremove -y
 
 # Re-add the Bluetooth stack explicitly after autoremove so it is guaranteed
@@ -52,6 +67,33 @@ dnf5 install -y \
     nvtop \
     vulkan-tools \
     libva-utils
+
+### Desktop capabilities: printing, file sharing, Thunderbolt, AppImage, codecs
+# cups*/ipp-usb = IPP / driverless printing (cups-pk-helper re-adds the KDE
+# print-dialog auth the base drops); samba/cifs-utils = share hosting + mounting;
+# iwlwifi-*-firmware = Intel wifi firmware; bolt+plasma-thunderbolt = TB daemon
+# and KDE KCM; fuse-libs = FUSE2 for AppImages; PackageKit-gstreamer-plugin =
+# on-demand codec install. Already-present packages are no-ops.
+dnf5 install -y \
+    cups cups-filters cups-pk-helper ipp-usb \
+    samba samba-client cifs-utils \
+    iwlwifi-mvm-firmware iwlwifi-dvm-firmware \
+    bolt plasma-thunderbolt \
+    fuse-libs \
+    PackageKit-gstreamer-plugin
+
+### Multimedia: enable rpmfusion, keep Terra's mesa, full ffmpeg, tainted firmware
+# See https://rpmfusion.org/Howto/Multimedia . We deliberately do NOT install
+# mesa-va-drivers-freeworld — Terra's mesa already provides freeworld VAAPI.
+FEDORA=$(rpm -E %fedora)
+dnf5 install -y \
+    "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-${FEDORA}.noarch.rpm" \
+    "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${FEDORA}.noarch.rpm"
+# Full ffmpeg over ffmpeg-free (likely already swapped by the base — guard as no-op)
+dnf5 swap -y ffmpeg-free ffmpeg --allowerasing || true
+# Additional redistributable firmware from the tainted repo
+dnf5 install -y rpmfusion-nonfree-release-tainted
+dnf5 install -y --repo=rpmfusion-nonfree-tainted "*-firmware" || true
 
 # Razer Basilisk V3 Pro: OpenRazer is NOT installed here. Its kernel module is
 # DKMS-only and can only build against the running kernel, which doesn't exist
