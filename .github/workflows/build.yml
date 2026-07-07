@@ -11,6 +11,8 @@ on:
       - main
     paths-ignore:
       - '**.md'
+      - 'LICENSE'
+      - 'docs/**'
   workflow_dispatch:
 
 env:
@@ -59,9 +61,40 @@ jobs:
       # These stage versions are kept up to date by Dependabot (.github/dependabot.yml)
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          fetch-depth: 0
+
+      # Skip the expensive image build when a push/PR touches only docs (**.md,
+      # LICENSE, docs/**). The job still runs so its required status check reports,
+      # but the heavy steps below are guarded on steps.detect.outputs.docs_only.
+      # schedule/workflow_dispatch always build (no diff base).
+      - name: Detect docs-only change
+        id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request" ]; then
+            changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          elif [ "$EVENT" = "push" ]; then
+            changed=$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA")
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "changed files:"; echo "$changed"
+          if [ -z "$changed" ] || echo "$changed" | grep -qvE '(\.md$|^LICENSE$|^docs/)'; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=true — skipping image build" >&2
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # This is optional, but if you see that your builds are way too big for the runners, you can enable this by uncommenting the following lines:
       - name: Maximize build space
+        if: steps.detect.outputs.docs_only != 'true'
         uses: ublue-os/remove-unwanted-software@695eb75bc387dbcd9685a8e72d23439d8686cba6
 
       - name: Get current date
@@ -107,6 +140,7 @@ jobs:
 
       - name: Build Image
         id: build_image
+        if: steps.detect.outputs.docs_only != 'true'
         uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
         with:
           containerfiles: |
@@ -144,7 +178,7 @@ jobs:
       # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
       - name: Login to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.detect.outputs.docs_only != 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -152,7 +186,7 @@ jobs:
 
       - name: Push To GHCR
         uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.detect.outputs.docs_only != 'true'
         id: push
         env:
           REGISTRY_USER: ${{ github.actor }}
@@ -170,12 +204,12 @@ jobs:
       # to consume. For more details, review the image signing section of the README.
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.detect.outputs.docs_only != 'true'
         with:
           cosign-release: 'v2.6.1'
 
       - name: Sign container image
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.detect.outputs.docs_only != 'true'
         run: |
           IMAGE_FULL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}"
           for tag in ${{ steps.metadata.outputs.tags }}; do
