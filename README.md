@@ -59,11 +59,10 @@ The ISO is an Anaconda installer produced by [bootc-image-builder](https://githu
 ### Option A — GitHub Actions (recommended)
 
 1. Make sure the image is published first (the build above is green).
-2. Go to **Actions → Build disk images → Run workflow**, choose platform **amd64**.
+2. Go to **Actions → Build disk images → Run workflow**.
 3. When it finishes, download the artifact from the run:
    - **`beelink-anaconda-iso`** → the Beelink/KDE installer ISO
    - `default-anaconda-iso` → the GNOME/NVIDIA installer ISO
-   - (`*-qcow2` artifacts are VM disk images, not installers.)
 
 ### Option B — Locally with podman + just
 
@@ -168,12 +167,11 @@ Container signing is required — builds fail without it. The keypair was create
 bazzite-custom/
 ├── .github/workflows/
 │   ├── build.yml             # matrix build + sign + push BOTH tags (daily cron + push + dispatch)
-│   └── build-disk.yml        # build QCOW2 + ISO for both variants (manual dispatch)
+│   └── build-disk.yml        # build amd64 installer ISOs for both variants (manual dispatch)
 ├── build_files/
 │   ├── build.sh              # default (GNOME/NVIDIA) customisations
 │   └── build-beelink.sh      # beelink (KDE/AMD) customisations
 ├── disk_config/
-│   ├── disk.toml             # QCOW2/raw filesystem config
 │   ├── iso-gnome.toml        # Anaconda ISO config — kickstart switches to :latest
 │   └── iso-kde.toml          # Anaconda ISO config — kickstart switches to :beelink
 ├── Containerfile             # default image (FROM bazzite-gnome-nvidia)

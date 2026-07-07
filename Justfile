@@ -2,9 +2,9 @@ export image_name := env("IMAGE_NAME", "image-template") # output image name, us
 export default_tag := env("DEFAULT_TAG", "latest")
 export bib_image := env("BIB_IMAGE", "quay.io/centos-bootc/bootc-image-builder:latest")
 
-alias build-vm := build-qcow2
-alias rebuild-vm := rebuild-qcow2
-alias run-vm := run-vm-qcow2
+alias build-vm := build-iso
+alias rebuild-vm := rebuild-iso
+alias run-vm := run-vm-iso
 alias build-iso-beelink := build-iso
 
 [private]
@@ -171,10 +171,10 @@ _rootful_load_image $target_image=image_name $tag=default_tag:
 # Parameters:
 #   target_image: The name of the image to build (ex. localhost/fedora)
 #   tag: The tag of the image to build (ex. latest)
-#   type: The type of image to build (ex. qcow2, raw, iso)
-#   config: The configuration file to use for the build (default: disk_config/disk.toml)
+#   type: The type of image to build (ex. iso)
+#   config: The configuration file to use for the build (ex. disk_config/iso-kde.toml)
 
-# Example: just _rebuild-bib localhost/fedora latest qcow2 disk_config/disk.toml
+# Example: just _build-bib localhost/fedora latest iso disk_config/iso-kde.toml
 _build-bib $target_image $tag $type $config: (_rootful_load_image target_image tag)
     #!/usr/bin/env bash
     set -euo pipefail
@@ -208,19 +208,11 @@ _build-bib $target_image $tag $type $config: (_rootful_load_image target_image t
 # Parameters:
 #   target_image: The name of the image to build (ex. localhost/fedora)
 #   tag: The tag of the image to build (ex. latest)
-#   type: The type of image to build (ex. qcow2, raw, iso)
-#   config: The configuration file to use for the build (deafult: disk_config/disk.toml)
+#   type: The type of image to build (ex. iso)
+#   config: The configuration file to use for the build (ex. disk_config/iso-kde.toml)
 
-# Example: just _rebuild-bib localhost/fedora latest qcow2 disk_config/disk.toml
+# Example: just _rebuild-bib localhost/fedora latest iso disk_config/iso-kde.toml
 _rebuild-bib $target_image $tag $type $config: (build target_image tag) && (_build-bib target_image tag type config)
-
-# Build a QCOW2 virtual machine image
-[group('Build Virtal Machine Image')]
-build-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "qcow2" "disk_config/disk.toml")
-
-# Build a RAW virtual machine image
-[group('Build Virtal Machine Image')]
-build-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "raw" "disk_config/disk.toml")
 
 # Build an ISO from the Beelink (KDE/AMD) image — also aliased as build-iso-beelink
 [group('Build Virtal Machine Image')]
@@ -229,14 +221,6 @@ build-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_build
 # Build an ISO from the default (GNOME/NVIDIA) image
 [group('Build Virtal Machine Image')]
 build-iso-gnome $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "iso" "disk_config/iso-gnome.toml")
-
-# Rebuild a QCOW2 virtual machine image
-[group('Build Virtal Machine Image')]
-rebuild-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "qcow2" "disk_config/disk.toml")
-
-# Rebuild a RAW virtual machine image
-[group('Build Virtal Machine Image')]
-rebuild-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "raw" "disk_config/disk.toml")
 
 # Rebuild an ISO virtual machine image
 [group('Build Virtal Machine Image')]
@@ -284,21 +268,13 @@ _run-vm $target_image $tag $type $config:
     (sleep 30 && xdg-open http://localhost:"$port") &
     podman run "${run_args[@]}"
 
-# Run a virtual machine from a QCOW2 image
-[group('Run Virtal Machine')]
-run-vm-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "qcow2" "disk_config/disk.toml")
-
-# Run a virtual machine from a RAW image
-[group('Run Virtal Machine')]
-run-vm-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "raw" "disk_config/disk.toml")
-
 # Run a virtual machine from an ISO
 [group('Run Virtal Machine')]
 run-vm-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "iso" "disk_config/iso-kde.toml")
 
 # Run a virtual machine using systemd-vmspawn
 [group('Run Virtal Machine')]
-spawn-vm rebuild="0" type="qcow2" ram="6G":
+spawn-vm rebuild="0" type="iso" ram="6G":
     #!/usr/bin/env bash
 
     set -euo pipefail
