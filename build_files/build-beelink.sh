@@ -24,7 +24,7 @@ dnf5 autoremove -y
 
 # Re-add the Bluetooth stack explicitly after autoremove so it is guaranteed
 # present and marked user-installed (autoremove can otherwise sweep it).
-dnf5 install -y --setopt=install_weak_deps=False \
+dnf5 install -y \
     bluez \
     bluez-obexd \
     bluedevil
@@ -47,7 +47,7 @@ if [[ -f "${FLATPAK_LIST}" ]]; then
 fi
 
 ### Install AMD monitoring/diagnostic tools (drivers already ship in the base)
-dnf5 install -y --setopt=install_weak_deps=False \
+dnf5 install -y \
     radeontop \
     nvtop \
     vulkan-tools \
