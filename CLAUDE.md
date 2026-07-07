@@ -20,11 +20,12 @@ Each Containerfile is a thin shell: stage `build_files/` via `FROM scratch AS ct
 - Both scripts `systemctl enable tailscaled` (preinstalled but disabled in the base).
 - **Both tags build from `main`** (via `build.yml`'s matrix) because GitHub runs `cron` workflows only on the default branch — that's what keeps both auto-rebuilding daily. Don't move a variant to its own branch.
 - Signing is mandatory (builds fail without it): `cosign.pub` is committed, the private key is the `SIGNING_SECRET` repo secret, `cosign.key` is gitignored — never commit it.
+- **`file://` GPG keys break the ISO build.** `bootc-image-builder`'s depsolve runs isolated and resolves `gpgkey=file:///…` against its *own* root, not the image's, so any repo shipping a local key (Bazzite's **Terra**; **rpmfusion** on beelink) fails the anaconda-iso build with `Curl error (37) … cannot depsolve` ([bib#1188](https://github.com/osbuild/bootc-image-builder/issues/1188), archived/unfixed). Both scripts end with a loop that sets `gpgcheck=0` and comments out the `file://` key on such repos — **keep it last** (after all repos are added) and mirrored. If you add a repo with a local key, this already covers it; if the ISO still fails on a new repo, extend that loop.
 
 ## CI workflows (`.github/workflows/`)
 
 - **`build.yml`** — matrix build + sign + push both tags. Triggers: push to `main`, daily cron, dispatch, PR (PRs build but don't push/sign).
-- **`build-disk.yml`** — dispatch build of the amd64 Anaconda installer ISOs (amd64-only, ISO-only) via `bootc-image-builder`. `iso-gnome.toml` → `:latest`, `iso-kde.toml` → `:beelink`.
+- **`build-disk.yml`** — dispatch build of the amd64 Anaconda installer ISOs (amd64-only, ISO-only) via `bootc-image-builder`. `iso-gnome.toml` → `:latest`, `iso-kde.toml` → `:beelink`. **It pulls the already-published GHCR image, not the branch's Containerfile** — so a build-script fix only reaches the ISO after it's merged and `build.yml` has republished the tag. Dispatching before the republish tests the *old* image. Output: `output/bootiso/install.iso` per variant (job artifacts `default-anaconda-iso` / `beelink-anaconda-iso`); optional S3 upload via `upload-to-s3=true`.
 - **`dependabot-automerge.yml`** — auto-merges Dependabot PRs.
 
 ## Building & verifying
