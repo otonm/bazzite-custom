@@ -196,3 +196,5 @@ podman run --rm ghcr.io/ublue-os/bazzite:stable rpm -qa | grep -iE 'steam|lutris
 **System not picking up a new image.** Run `ujust update` (or `rpm-ostree upgrade`) to force an immediate check.
 
 **Scheduled builds stopped.** GitHub suspends cron workflows after 60 days of inactivity; wei/pull activity normally prevents this. Otherwise push a commit or run the workflow manually.
+
+<!-- ci docs-skip verification: this branch is throwaway, never merged -->
