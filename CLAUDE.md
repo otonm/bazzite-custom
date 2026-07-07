@@ -27,18 +27,9 @@ Each Containerfile is a thin shell: stage `build_files/` via `FROM scratch AS ct
 - **`build-disk.yml`** — dispatch build of the amd64 Anaconda installer ISOs (amd64-only, ISO-only) via `bootc-image-builder`. `iso-gnome.toml` → `:latest`, `iso-kde.toml` → `:beelink`.
 - **`dependabot-automerge.yml`** — auto-merges Dependabot PRs.
 
-## Commands (local, via `just` + `podman`)
+## Building & verifying
 
-```bash
-just build                                       # :latest  -> localhost/bazzite-custom:latest
-just build-beelink                               # :beelink -> localhost/bazzite-custom:beelink
-just build-iso-gnome localhost/bazzite-custom latest    # ISO -> output/bootiso/install.iso
-just build-iso-beelink localhost/bazzite-custom beelink
-just run-vm-iso localhost/bazzite-custom beelink # smoke-test an ISO in a QEMU VM
-just check      # Justfile syntax   | just lint = shellcheck *.sh | just clean = remove artifacts
-```
-
-No test suite — verification is `bootc container lint` (inside the build) plus a successful `just build`.
+No local build tooling here (`podman`/`just` are not installed) and no test suite. Building, signing, and verification all happen in CI: `bootc container lint` runs inside every build, and PRs run `build.yml` without pushing — open a PR and let the build workflow validate the change. (`Justfile` recipes exist for contributors who do have `podman`, but don't rely on running them in this environment.)
 
 ## Working conventions
 
