@@ -18,6 +18,22 @@ rm -f \
 
 dnf5 autoremove -y
 
+### Work around bootc-image-builder ISO depsolve, which cannot read gpgkey=file://
+### keys from inside the image (osbuild/bootc-image-builder#1188 — archived/unfixed).
+### Disable gpgcheck on any repo whose key is a local file:// path (Terra) so the
+### anaconda-iso depsolve doesn't try — and fail — to fetch it. Only affects manual
+### dnf layering on the installed system; the image is cosign-signed and its packages
+### were already GPG-verified at build time.
+for repo in /etc/yum.repos.d/*.repo; do
+    if grep -q 'gpgkey=file://' "${repo}"; then
+        sed -i \
+            -e 's/^gpgcheck=1/gpgcheck=0/' \
+            -e 's/^repo_gpgcheck=1/repo_gpgcheck=0/' \
+            -e 's|^gpgkey=file://|#gpgkey=file://|' \
+            "${repo}"
+    fi
+done
+
 dnf5 clean all
 
 # Tailscale is already installed in the bazzite base image but its systemd
