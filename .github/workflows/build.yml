@@ -138,9 +138,52 @@ jobs:
           sep-tags: " "
           sep-annotations: " "
 
+      # Build once, promote on merge. A PR build pushes a per-PR staging tag
+      # (:<tag>-pr-<N>); the merge to main then just re-tags that already-built,
+      # already-rechunked image to the release tags instead of rebuilding. This
+      # step decides which path we're on:
+      #   - pull_request  -> pr=<N>, promote=false (we build + push staging below)
+      #   - push (merge)  -> pr parsed from the squash commit "(#N)"; promote=true
+      #                      ONLY if that staging image actually exists in GHCR
+      #   - schedule/dispatch -> pr="", promote=false (always rebuild for fresh
+      #                      base-image updates)
+      # If a merge can't find its staged image, promote stays false and we fall
+      # back to a normal build+push+sign — so publishing can never silently break.
+      - name: Plan build vs promote
+        id: plan
+        if: steps.detect.outputs.docs_only != 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_EVENT_NUM: ${{ github.event.number }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          promote=false
+          pr=""
+          if [ "$EVENT" = "pull_request" ]; then
+            pr="$PR_EVENT_NUM"
+          elif [ "$EVENT" = "push" ]; then
+            # squash-merge subject ends with "(#N)"; merge-commit is "#N" too
+            pr="$(printf '%s' "$HEAD_MSG" | head -1 | grep -oE '#[0-9]+' | head -1 | tr -d '#' || true)"
+          fi
+          staging_tag=""
+          if [ -n "${pr}" ]; then
+            staging_tag="${{ matrix.tag }}-pr-${pr}"
+          fi
+          # Promote only on a merge, and only if the PR's staged image is present.
+          if [ "$EVENT" = "push" ] && [ -n "${staging_tag}" ]; then
+            if skopeo inspect --raw "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${staging_tag}" >/dev/null 2>&1; then
+              promote=true
+            fi
+          fi
+          echo "pr=${pr}" >> "$GITHUB_OUTPUT"
+          echo "staging_tag=${staging_tag}" >> "$GITHUB_OUTPUT"
+          echo "promote=${promote}" >> "$GITHUB_OUTPUT"
+          echo "Plan: event=${EVENT} pr=${pr:-none} staging_tag=${staging_tag:-none} promote=${promote}"
+
       - name: Build Image
         id: build_image
-        if: steps.detect.outputs.docs_only != 'true'
+        if: steps.detect.outputs.docs_only != 'true' && steps.plan.outputs.promote != 'true'
         uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
         with:
           containerfiles: |
@@ -161,7 +204,7 @@ jobs:
       # re-apply the remaining metadata tags so the push step publishes it.
       # Runs per matrix variant, so both tags are rechunked.
       - name: Rechunk with chunkah
-        if: steps.detect.outputs.docs_only != 'true'
+        if: steps.detect.outputs.docs_only != 'true' && steps.plan.outputs.promote != 'true'
         run: |
           set -euxo pipefail
           SRC="localhost/${IMAGE_NAME}:${{ matrix.tag }}"
@@ -184,19 +227,58 @@ jobs:
             podman tag "${SRC}" "${IMAGE_NAME}:${tag}"
           done
 
-      # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
-      # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
+      # Log in whenever we're going to push something: a same-repo PR (staging
+      # tag), a merge/cron/dispatch on main (release tags), or a promote copy.
+      # Fork PRs have no secrets and never push, so they're excluded.
       - name: Login to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.detect.outputs.docs_only != 'true'
+        if: >-
+          steps.detect.outputs.docs_only != 'true' &&
+          (github.event.pull_request.head.repo.full_name == github.repository ||
+           (github.event_name != 'pull_request' &&
+            github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # PR builds don't publish release tags — they push only the per-PR staging
+      # tag so the eventual merge can promote this exact (built + rechunked) image.
+      - name: Push staging image (PR)
+        if: >-
+          steps.detect.outputs.docs_only != 'true' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          STAGE: ${{ steps.plan.outputs.staging_tag }}
+        run: |
+          set -euxo pipefail
+          podman push "${IMAGE_NAME}:${STAGE}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${STAGE}"
+
+      # Merge with a matching staged image: re-tag it to the release tags instead
+      # of rebuilding. Source is public (no creds); dest needs push creds.
+      - name: Promote staged image (merge)
+        if: steps.plan.outputs.promote == 'true'
+        env:
+          STAGE: ${{ steps.plan.outputs.staging_tag }}
+        run: |
+          set -euxo pipefail
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            skopeo copy --all \
+              --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${STAGE}" \
+              "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}"
+          done
+
+      # Normal publish for merge-without-staging, cron, and dispatch (i.e. when we
+      # actually built above). Skipped when we promoted a prebuilt image.
       - name: Push To GHCR
         uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.detect.outputs.docs_only != 'true'
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          steps.detect.outputs.docs_only != 'true' &&
+          steps.plan.outputs.promote != 'true'
         id: push
         env:
           REGISTRY_USER: ${{ github.actor }}
