@@ -1,6 +1,8 @@
 #!/bin/bash
 
-set -eoux pipefail
+set -euo pipefail
+trap '[[ $BASH_COMMAND != echo* ]] && [[ $BASH_COMMAND != log* ]] && echo "+ $BASH_COMMAND"' DEBUG
+log() { echo "=== $* ==="; }
 
 ### Remove gaming packages not wanted in this image
 # (Sunshine is not an RPM on the base — it's opt-in via `ujust setup-sunshine`,
@@ -158,21 +160,12 @@ install -Dm755 /ctx/openrazer-plugdev-setup /usr/libexec/openrazer-plugdev-setup
 install -Dm644 /ctx/openrazer-plugdev.service /usr/lib/systemd/system/openrazer-plugdev.service
 systemctl enable openrazer-plugdev.service
 
-### Work around bootc-image-builder ISO depsolve, which cannot read gpgkey=file://
-### keys from inside the image (osbuild/bootc-image-builder#1188 — archived/unfixed).
-### Disable gpgcheck on any repo whose key is a local file:// path (Terra, rpmfusion)
-### so the anaconda-iso depsolve doesn't try — and fail — to fetch it. Only affects
-### manual dnf layering on the installed system; the image is cosign-signed and its
-### packages were already GPG-verified at build time.
-for repo in /etc/yum.repos.d/*.repo; do
-    if grep -q 'gpgkey=file://' "${repo}"; then
-        sed -i \
-            -e 's/^gpgcheck=1/gpgcheck=0/' \
-            -e 's/^repo_gpgcheck=1/repo_gpgcheck=0/' \
-            -e 's|^gpgkey=file://|#gpgkey=file://|' \
-            "${repo}"
-    fi
-done
+### Shared steps (podman, Brave, tailscale, flatpak unblock) — see common.sh
+/ctx/common.sh
+
+### ISO file:// gpgkey workaround — must run after all repos are added
+### (Terra, rpmfusion, OpenRazer, Brave). See fix-iso-gpgcheck.sh.
+/ctx/fix-iso-gpgcheck.sh
 
 ### Firewall: make "trusted" the default zone for all interfaces.
 # This is a trusted-LAN mini-PC; default all NICs to the trusted zone (allow all)
@@ -183,17 +176,5 @@ sed -i 's/^DefaultZone=.*/DefaultZone=trusted/' /etc/firewalld/firewalld.conf
 ### Bake in cosign signature verification for this image (see setup-signing.sh).
 /ctx/setup-signing.sh
 
-dnf5 clean all
-
-# Tailscale is already installed in the bazzite base image but its systemd
-# service is shipped disabled by default. Enable it here so it starts on boot.
-# After first boot, run: sudo tailscale up
-systemctl enable tailscaled
-
-# Remove the Flatpak blocklist entries for Steam and Lutris.
-# Without this, bazzite-flatpak-manager would still block these apps from Flathub
-# at runtime even though the RPMs are gone.
-sed -i \
-    -e '/com\.valvesoftware\.Steam/d' \
-    -e '/net\.lutris\.Lutris/d' \
-    /usr/share/ublue-os/flatpak-blocklist 2>/dev/null || true
+### Final cleanup + container commit (see cleanup.sh) — keep last.
+/ctx/cleanup.sh

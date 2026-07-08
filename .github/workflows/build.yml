@@ -150,29 +150,44 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
-      # Rechunk is a script that we use on Universal Blue to make sure there isnt a single huge layer when your image gets published.
-      # This does not make your image faster to download, just provides better resumability and fixes a few errors.
-      # Documentation for Rechunk is provided on their github repository at https://github.com/hhd-dev/rechunk
-      # You can enable it by uncommenting the following lines:
-      # - name: Run Rechunker
-      #   id: rechunk
-      #   uses: ublue-os/legacy-rechunk@a925083d9af7cb04b3e2a6e8c01bfa495f38b710 # v1.0.0
-      #   with:
-      #     rechunk: 'ghcr.io/ublue-os/legacy-rechunk:v1.0.0-x86_64'
-      #     ref: "localhost/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
-      #     prev-ref: "${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}"
-      #     skip_compression: true
-      #     version: ${{ env.CENTOS_VERSION }}
-      #     labels: ${{ steps.metadata.outputs.labels }} # Rechunk strips out all the labels during build, this needs to be reapplied here with newline separator
+      # buildah-build writes to the rootless container store, but legacy-rechunk
+      # runs `sudo podman create` against the ROOTFUL store — so it can't see the
+      # image and tries to pull `localhost/…` as a registry (connection refused).
+      # Stream the built image into the rootful store first (piped, so there's no
+      # multi-GB temp tarball on the runner's disk).
+      - name: Load built image into rootful podman (for rechunk)
+        if: steps.detect.outputs.docs_only != 'true'
+        run: podman save "localhost/${IMAGE_NAME}:${{ matrix.tag }}" | sudo podman load
+
+      # Rechunk splits the single huge build layer into many well-partitioned
+      # layers, which improves pull resumability and update deltas (it does not
+      # speed up a fresh download). Runs per matrix variant, so both tags are
+      # rechunked. Docs: https://github.com/hhd-dev/rechunk
+      # NOTE: `ref`/`prev-ref` use the per-variant `matrix.tag` (the plain
+      # `type=raw` tag buildah applied); `version` uses the metadata version
+      # string (rechunk only labels with it — labels are reapplied below anyway),
+      # avoiding a fragile `rpm -E %fedora` probe of the buildah store.
+      - name: Run Rechunker
+        id: rechunk
+        if: steps.detect.outputs.docs_only != 'true'
+        uses: ublue-os/legacy-rechunk@a925083d9af7cb04b3e2a6e8c01bfa495f38b710 # v1.0.0
+        with:
+          rechunk: 'ghcr.io/ublue-os/legacy-rechunk:v1.0.0-x86_64'
+          ref: "localhost/${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
+          prev-ref: "${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
+          skip_compression: true
+          version: ${{ steps.metadata.outputs.version }}
+          labels: ${{ steps.metadata.outputs.labels }} # Rechunk strips out all the labels during build, this needs to be reapplied here with newline separator
 
       # This is necessary so that the podman socket can find the rechunked image on its storage
-      # - name: Load in podman and tag
-      #   run: |
-      #     IMAGE=$(podman pull ${{ steps.rechunk.outputs.ref }})
-      #     sudo rm -rf ${{ steps.rechunk.outputs.output }}
-      #     for tag in ${{ steps.metadata.outputs.tags }}; do
-      #       podman tag $IMAGE ${{ env.IMAGE_NAME }}:$tag
-      #     done
+      - name: Load in podman and tag
+        if: steps.detect.outputs.docs_only != 'true'
+        run: |
+          IMAGE=$(podman pull ${{ steps.rechunk.outputs.ref }})
+          sudo rm -rf ${{ steps.rechunk.outputs.output }}
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            podman tag $IMAGE ${{ env.IMAGE_NAME }}:$tag
+          done
 
       # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
       # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
