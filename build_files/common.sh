@@ -18,9 +18,25 @@ log "Installing Brave Origin"
 # reboots (bootc deployments go live on reboot) — a Flatpak would update live.
 # The repo ships an https gpgkey, so it does NOT trip the file:// ISO-depsolve
 # workaround in fix-iso-gpgcheck.sh. Repo file added the same way as OpenRazer's.
+#
+# Brave installs into /opt, which on bootc is a symlink to /var/opt. Two problems
+# that this handles (mirrors amyos's fix-opt.sh, needed here only because of Brave):
+#   1. the RPM's cpio can't unpack unless the symlink target exists -> pre-create it;
+#   2. /var is runtime state and gets wiped (cleanup.sh flush + ostree commit), so
+#      anything left in /var/opt would vanish. After install, relocate it into the
+#      immutable /usr/lib/opt and add a tmpfiles symlink recreating /var/opt/* at boot.
+mkdir -p /var/opt
 curl -Lo /etc/yum.repos.d/brave-browser.repo \
     https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
 dnf5 install -y brave-origin
+mkdir -p /usr/lib/opt
+for dir in /var/opt/*/; do
+    [ -d "${dir}" ] || continue
+    name=$(basename "${dir}")
+    mv "${dir}" "/usr/lib/opt/${name}"
+    echo "L+ /var/opt/${name} - - - - /usr/lib/opt/${name}" \
+        >> /usr/lib/tmpfiles.d/bazzite-custom-opt.conf
+done
 
 log "Enabling Tailscale"
 # Tailscale is already installed in the Bazzite base but shipped disabled.
