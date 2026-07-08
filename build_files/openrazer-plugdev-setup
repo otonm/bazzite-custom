@@ -1,0 +1,18 @@
+#!/bin/bash
+# Ensure interactive users are in the plugdev group so openrazer-daemon can start.
+#
+# openrazer-daemon refuses to run unless the user is in plugdev. On atomic/ostree
+# the plugdev group ships only in the read-only factory DB (/usr/lib/group), not in
+# /etc/group, so shadow tools (and the `gpasswd` command the daemon suggests) can't
+# see it. Seed it into /etc/group, then add every human user.
+set -euo pipefail
+
+if ! grep -q '^plugdev:' /etc/group; then
+    grep '^plugdev:' /usr/lib/group >> /etc/group 2>/dev/null || groupadd -r plugdev
+fi
+
+while IFS=: read -r name _ uid _ _ _ shell; do
+    [ "${uid}" -ge 1000 ] && [ "${uid}" -lt 65534 ] || continue
+    case "${shell}" in */nologin | */false) continue ;; esac
+    id -nG "${name}" 2>/dev/null | grep -qw plugdev || usermod -aG plugdev "${name}"
+done < /etc/passwd

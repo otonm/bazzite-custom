@@ -107,13 +107,9 @@ just run-vm-iso localhost/bazzite-custom beelink   # opens a browser-based QEMU 
    ```bash
    # Tailscale (both variants — already enabled, just authenticate)
    sudo tailscale up
-
-   # Razer Basilisk V3 Pro (beelink only) — OpenRazer is already baked in.
-   # One-time: add yourself to the plugdev group, then log out/in.
-   sudo usermod -aG plugdev "$USER"
    ```
 
-   OpenRazer (daemon + kernel module) ships in the `:beelink` image, so there's no install step. After adding yourself to `plugdev` and re-logging in, optionally install a GUI to configure the mouse: `flatpak install flathub app.polychromatic.controller` (Polychromatic) or `xyz.z3ntu.razergenie` (Razer Genie).
+   **Razer Basilisk V3 Pro (beelink only)** — OpenRazer (daemon + kernel module) is baked into the image, and a boot service adds your user to the `plugdev` group that the daemon requires, so there's nothing to install. Just log in (the group is applied at login). Optionally install a GUI to configure the mouse: `flatpak install flathub app.polychromatic.controller` (Polychromatic) or `xyz.z3ntu.razergenie` (Razer Genie).
 
 ---
 
@@ -141,11 +137,8 @@ rpm-ostree status   # should show ostree-image-signed:docker://ghcr.io/otonm/baz
 ## Razer Basilisk V3 Pro (beelink)
 
 - OpenRazer is **baked into the image** — the `openrazer-daemon` and the kernel module (built from source against the image's own kernel) both ship in `:beelink`. There is no `ujust install-openrazer` step; that recipe can't work on this image (see below).
-- **One-time setup:** add yourself to the `plugdev` group and re-login (OpenRazer's udev rules gate the device's `/sys` control interface on that group):
-  ```bash
-  sudo usermod -aG plugdev "$USER"
-  ```
-  Then, optionally, a GUI: `flatpak install flathub app.polychromatic.controller` (**Polychromatic**) or `xyz.z3ntu.razergenie` (**Razer Genie**). The daemon is dbus-activated and enabled at login.
+- **No manual setup.** `openrazer-daemon` refuses to run unless your user is in the `plugdev` group, and on an atomic system that group isn't in `/etc/group` (so the `sudo gpasswd -a $USER plugdev` the daemon's error suggests **fails** with "group does not exist"). A baked boot service (`openrazer-plugdev.service`) seeds `plugdev` into `/etc/group` and adds human users to it, so the daemon just works after you log in. If you ever need to do it by hand, use `sudo usermod -aG plugdev "$USER"` (which works, unlike `gpasswd`) and re-login.
+- Optionally install a GUI: `flatpak install flathub app.polychromatic.controller` (**Polychromatic**) or `xyz.z3ntu.razergenie` (**Razer Genie**). The daemon is dbus-activated and enabled at login.
 - The mouse works as a normal HID mouse out of the box; OpenRazer adds RGB/DPI/button control.
 - OpenRazer controls the mouse over **wired USB or the 2.4 GHz dongle** (this mouse is PID `1532:00AB`) — **not** over Bluetooth.
 - **Secure Boot:** the baked module is **unsigned**, so it loads only with Secure Boot **disabled** (the case on the target box). With Secure Boot enforcing, the kernel refuses unsigned modules and OpenRazer won't work until the module is signed with an enrolled MOK.
@@ -189,7 +182,7 @@ bazzite-custom/
 
 ## Troubleshooting
 
-**Razer mouse not detected.** Confirm it's connected via the dongle or cable (not Bluetooth), that you ran `sudo usermod -aG plugdev $USER` and re-logged in, and that your PID shows up: `lsusb | grep 1532`. The kernel module is baked in and rebuilt on every daily image, so it always matches the running kernel — check it's loaded with `lsmod | grep razer` (or `modprobe razermouse`). If a future OpenRazer/kernel combo ever fails to build, the image build itself fails in CI (the tag simply won't update) rather than shipping a broken module.
+**Razer mouse not detected / "OpenRazer daemon is not running".** The daemon needs your user in `plugdev`; the baked `openrazer-plugdev.service` handles this, but if you logged in before it ran, log out and back in. To check: `id -nG | grep plugdev` and `systemctl --user status openrazer-daemon`. If you must add it manually, use `sudo usermod -aG plugdev "$USER"` (the `gpasswd` command the daemon suggests fails on atomic). Confirm the mouse is on the dongle or cable (not Bluetooth) and shows up: `lsusb | grep 1532`. The kernel module is baked in and rebuilt on every daily image, so it always matches the running kernel — check it's loaded with `lsmod | grep razer` (or `modprobe razermouse`). If a future OpenRazer/kernel combo ever fails to build, the image build itself fails in CI (the tag simply won't update) rather than shipping a broken module.
 
 **Build fails at `dnf5 remove`.** A package name may differ on the base image. Verify against the live image and adjust the relevant `build*.sh`:
 

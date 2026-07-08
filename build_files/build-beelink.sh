@@ -132,8 +132,15 @@ install -d "/usr/lib/modules/${KVER}/extra/openrazer"
 install -m0644 "${ORZ_SRC}"/driver/*.ko "/usr/lib/modules/${KVER}/extra/openrazer/"
 depmod -a "${KVER}"
 # Auto-start the (dbus-activated) daemon at login for all users so RGB/DPI apply
-# without opening a GUI first. Users must still be in plugdev (see README).
+# without opening a GUI first.
 systemctl --global enable openrazer-daemon.service
+# openrazer-daemon refuses to run unless the user is in plugdev, and on atomic that
+# group isn't in /etc/group (so the `gpasswd` it suggests fails). Ship a boot service
+# that seeds plugdev into /etc/group and adds human users, so it works with no manual
+# step. See openrazer-plugdev-setup / .service.
+install -Dm755 /ctx/openrazer-plugdev-setup /usr/libexec/openrazer-plugdev-setup
+install -Dm644 /ctx/openrazer-plugdev.service /usr/lib/systemd/system/openrazer-plugdev.service
+systemctl enable openrazer-plugdev.service
 
 ### Work around bootc-image-builder ISO depsolve, which cannot read gpgkey=file://
 ### keys from inside the image (osbuild/bootc-image-builder#1188 — archived/unfixed).
