@@ -1,0 +1,78 @@
+---
+# Prune the per-PR staging tags that build.yml's "build once, promote on merge"
+# flow leaves in GHCR (`:latest-pr-<N>` / `:beelink-pr-<N>`).
+#
+# SAFETY: deleting a GHCR *version* removes the underlying manifest and every tag
+# pointing at it. Right after a merge, the staging tag shares its digest with the
+# freshly-promoted release tag (skopeo copy = identical bytes), and cosign
+# signatures live as `sha256-*.sig` tags. So we only ever delete a version whose
+# tag set is EXCLUSIVELY `<variant>-pr-<N>` staging tags AND whose PRs are all
+# closed. A just-merged staging tag still carries its release tag, so it's
+# protected until the next daily build moves the release onto a new digest —
+# after which the lone staging tag is safe to remove.
+name: Cleanup PR staging tags
+
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC (before the 06:00 daily build)
+  workflow_dispatch:
+
+permissions:
+  packages: write
+  pull-requests: read
+
+jobs:
+  cleanup:
+    name: Delete promoted/closed PR staging tags
+    runs-on: ubuntu-24.04
+    env:
+      # GITHUB_TOKEN can delete versions of packages linked to this repo. If your
+      # package is user-scoped and that's denied, set GHCR_CLEANUP_TOKEN to a PAT
+      # with `delete:packages` and it will be used instead.
+      GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}
+      OWNER: ${{ github.repository_owner }}
+      PKG: ${{ github.event.repository.name }}
+    steps:
+      - name: Prune staging tags
+        run: |
+          set -euo pipefail
+
+          deleted=0 kept=0
+          # Stream every container package version (across pages).
+          while read -r v; do
+            id="$(jq -r '.id' <<<"$v")"
+            mapfile -t tags < <(jq -r '.metadata.container.tags[]?' <<<"$v")
+            # Skip untagged/referrer manifests and anything with a non-staging tag
+            # (release tags, dated tags, cosign `.sig` tags, …) — never touch those.
+            [ "${#tags[@]}" -gt 0 ] || continue
+            only_staging=true
+            prs=()
+            for t in "${tags[@]}"; do
+              if [[ "$t" =~ ^(latest|beelink)-pr-([0-9]+)$ ]]; then
+                prs+=("${BASH_REMATCH[2]}")
+              else
+                only_staging=false
+                break
+              fi
+            done
+            $only_staging || continue
+
+            # Keep while any referenced PR is still open — it will promote on merge.
+            keep=false
+            for n in "${prs[@]}"; do
+              state="$(gh api "/repos/${OWNER}/${PKG}/pulls/${n}" --jq '.state' 2>/dev/null || echo unknown)"
+              [ "$state" = "open" ] && { keep=true; break; }
+            done
+            if $keep; then
+              echo "keep    version ${id} (tags: ${tags[*]}) — PR still open"
+              kept=$((kept + 1))
+              continue
+            fi
+
+            echo "delete  version ${id} (tags: ${tags[*]})"
+            gh api --method DELETE "/users/${OWNER}/packages/container/${PKG}/versions/${id}"
+            deleted=$((deleted + 1))
+          done < <(gh api --paginate \
+            "/users/${OWNER}/packages/container/${PKG}/versions?per_page=100" --jq '.[]')
+
+          echo "Done: deleted=${deleted} kept=${kept}"
