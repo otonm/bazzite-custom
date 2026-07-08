@@ -1,0 +1,15 @@
+[Unit]
+Description=Add interactive users to the plugdev group (OpenRazer)
+# plugdev membership is a hard requirement of openrazer-daemon and must be in place
+# before the user's graphical session (and thus the user daemon) starts.
+After=systemd-user-sessions.service
+Before=display-manager.service
+ConditionPathExists=/usr/libexec/openrazer-plugdev-setup
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/openrazer-plugdev-setup
+
+[Install]
+WantedBy=multi-user.target

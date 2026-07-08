@@ -22,7 +22,23 @@ rm -f \
 
 # The base ships a Steam autostart entry in /etc/skel, so every new user gets
 # Steam launching at each login. Steam is removed from this image, so drop it.
+# (Users created before this landed keep a stale copy in ~/.config/autostart —
+# that per-home file must be deleted by hand; the image can't reach into $HOME.)
 rm -f /etc/skel/.config/autostart/steam.desktop
+
+### Remove unwanted base desktop extras (beelink)
+# Foreground Booster (plasma-foreground-booster-dmemcg): keep the package — the
+# helper runs automatically as the static `plasma-foreground-booster` user
+# service — but drop its app-menu launcher; it's a background CPU-weight helper,
+# nothing to open by hand. Package, /usr/bin/foreground_booster and the service
+# stay put.
+rm -f /usr/share/applications/org.kde.foreground-booster.desktop
+# Bazzite's bundled offline documentation: 72M of pre-rendered html plus a
+# serve.sh that spins up a local http.server, reached via the "Documentation"
+# app-menu shortcut. All are unpackaged files baked in by the base, so remove
+# them directly.
+rm -rf /usr/share/ublue-os/docs
+rm -f /usr/share/applications/bazzite-documentation.desktop
 
 ### Remove hardware/tooling not used on this AMD/KDE box
 # Intel GPU drivers/utilities (AMD box), System76 laptop drivers, cockpit web
@@ -132,8 +148,15 @@ install -d "/usr/lib/modules/${KVER}/extra/openrazer"
 install -m0644 "${ORZ_SRC}"/driver/*.ko "/usr/lib/modules/${KVER}/extra/openrazer/"
 depmod -a "${KVER}"
 # Auto-start the (dbus-activated) daemon at login for all users so RGB/DPI apply
-# without opening a GUI first. Users must still be in plugdev (see README).
+# without opening a GUI first.
 systemctl --global enable openrazer-daemon.service
+# openrazer-daemon refuses to run unless the user is in plugdev, and on atomic that
+# group isn't in /etc/group (so the `gpasswd` it suggests fails). Ship a boot service
+# that seeds plugdev into /etc/group and adds human users, so it works with no manual
+# step. See openrazer-plugdev-setup / .service.
+install -Dm755 /ctx/openrazer-plugdev-setup /usr/libexec/openrazer-plugdev-setup
+install -Dm644 /ctx/openrazer-plugdev.service /usr/lib/systemd/system/openrazer-plugdev.service
+systemctl enable openrazer-plugdev.service
 
 ### Work around bootc-image-builder ISO depsolve, which cannot read gpgkey=file://
 ### keys from inside the image (osbuild/bootc-image-builder#1188 — archived/unfixed).
