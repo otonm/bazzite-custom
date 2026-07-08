@@ -150,6 +150,15 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
+      # buildah-build writes to the rootless container store, but legacy-rechunk
+      # runs `sudo podman create` against the ROOTFUL store — so it can't see the
+      # image and tries to pull `localhost/…` as a registry (connection refused).
+      # Stream the built image into the rootful store first (piped, so there's no
+      # multi-GB temp tarball on the runner's disk).
+      - name: Load built image into rootful podman (for rechunk)
+        if: steps.detect.outputs.docs_only != 'true'
+        run: podman save "localhost/${IMAGE_NAME}:${{ matrix.tag }}" | sudo podman load
+
       # Rechunk splits the single huge build layer into many well-partitioned
       # layers, which improves pull resumability and update deltas (it does not
       # speed up a fresh download). Runs per matrix variant, so both tags are
