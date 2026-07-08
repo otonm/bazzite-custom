@@ -22,7 +22,23 @@ rm -f \
 
 # The base ships a Steam autostart entry in /etc/skel, so every new user gets
 # Steam launching at each login. Steam is removed from this image, so drop it.
+# (Users created before this landed keep a stale copy in ~/.config/autostart —
+# that per-home file must be deleted by hand; the image can't reach into $HOME.)
 rm -f /etc/skel/.config/autostart/steam.desktop
+
+### Remove unwanted base desktop extras (beelink)
+# Foreground Booster (plasma-foreground-booster-dmemcg): keep the package — the
+# helper runs automatically as the static `plasma-foreground-booster` user
+# service — but drop its app-menu launcher; it's a background CPU-weight helper,
+# nothing to open by hand. Package, /usr/bin/foreground_booster and the service
+# stay put.
+rm -f /usr/share/applications/org.kde.foreground-booster.desktop
+# Bazzite's bundled offline documentation: 72M of pre-rendered html plus a
+# serve.sh that spins up a local http.server, reached via the "Documentation"
+# app-menu shortcut. All are unpackaged files baked in by the base, so remove
+# them directly.
+rm -rf /usr/share/ublue-os/docs
+rm -f /usr/share/applications/bazzite-documentation.desktop
 
 ### Remove hardware/tooling not used on this AMD/KDE box
 # Intel GPU drivers/utilities (AMD box), System76 laptop drivers, cockpit web
