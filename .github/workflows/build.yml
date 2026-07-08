@@ -150,43 +150,38 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
-      # buildah-build writes to the rootless container store, but legacy-rechunk
-      # runs `sudo podman create` against the ROOTFUL store — so it can't see the
-      # image and tries to pull `localhost/…` as a registry (connection refused).
-      # Stream the built image into the rootful store first (piped, so there's no
-      # multi-GB temp tarball on the runner's disk).
-      - name: Load built image into rootful podman (for rechunk)
-        if: steps.detect.outputs.docs_only != 'true'
-        run: podman save "localhost/${IMAGE_NAME}:${{ matrix.tag }}" | sudo podman load
-
-      # Rechunk splits the single huge build layer into many well-partitioned
-      # layers, which improves pull resumability and update deltas (it does not
-      # speed up a fresh download). Runs per matrix variant, so both tags are
-      # rechunked. Docs: https://github.com/hhd-dev/rechunk
-      # NOTE: `ref`/`prev-ref` use the per-variant `matrix.tag` (the plain
-      # `type=raw` tag buildah applied); `version` uses the metadata version
-      # string (rechunk only labels with it — labels are reapplied below anyway),
-      # avoiding a fragile `rpm -E %fedora` probe of the buildah store.
-      - name: Run Rechunker
-        id: rechunk
-        if: steps.detect.outputs.docs_only != 'true'
-        uses: ublue-os/legacy-rechunk@a925083d9af7cb04b3e2a6e8c01bfa495f38b710 # v1.0.0
-        with:
-          rechunk: 'ghcr.io/ublue-os/legacy-rechunk:v1.0.0-x86_64'
-          ref: "localhost/${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
-          prev-ref: "${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.tag }}"
-          skip_compression: true
-          version: ${{ steps.metadata.outputs.version }}
-          labels: ${{ steps.metadata.outputs.labels }} # Rechunk strips out all the labels during build, this needs to be reapplied here with newline separator
-
-      # This is necessary so that the podman socket can find the rechunked image on its storage
-      - name: Load in podman and tag
+      # Rechunk splits the single huge build layer into many content-based layers,
+      # which improves pull resumability and shrinks update deltas (it does not
+      # speed up a fresh download). We use chunkah — the ublue image-template's
+      # recommended/future-default rechunker (its `just rechunk` recipe) — which,
+      # unlike legacy-rechunk, runs entirely in rootless podman (no root store
+      # bridge) and preserves the image config/labels via CHUNKAH_CONFIG_STR.
+      # chunkah reads the built image via an image mount, emits content-based
+      # layers, and pipes the result back into podman under the same tag; we then
+      # re-apply the remaining metadata tags so the push step publishes it.
+      # Runs per matrix variant, so both tags are rechunked.
+      - name: Rechunk with chunkah
         if: steps.detect.outputs.docs_only != 'true'
         run: |
-          IMAGE=$(podman pull ${{ steps.rechunk.outputs.ref }})
-          sudo rm -rf ${{ steps.rechunk.outputs.output }}
+          set -euxo pipefail
+          SRC="localhost/${IMAGE_NAME}:${{ matrix.tag }}"
+          export CHUNKAH_CONFIG_STR="$(podman inspect "${SRC}")"
+          podman run --rm \
+            --mount=type=image,src="${SRC}",target=/chunkah \
+            -e CHUNKAH_CONFIG_STR \
+            quay.io/coreos/chunkah:latest \
+            build \
+            --verbose \
+            --compressed \
+            --max-layers 128 \
+            --prune /sysroot/ \
+            --label ostree.commit- --label ostree.final-diffid- \
+            --tag "${SRC}" | podman load
+          # chunkah loaded the chunked image as ${SRC} (matrix.tag). Point the
+          # other metadata tags (date, sha, pr) at it too, so Push publishes the
+          # chunked image under every tag.
           for tag in ${{ steps.metadata.outputs.tags }}; do
-            podman tag $IMAGE ${{ env.IMAGE_NAME }}:$tag
+            podman tag "${SRC}" "${IMAGE_NAME}:${tag}"
           done
 
       # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
