@@ -34,6 +34,9 @@ for repo in /etc/yum.repos.d/*.repo; do
     fi
 done
 
+### Bake in cosign signature verification for this image (see setup-signing.sh).
+/ctx/setup-signing.sh
+
 dnf5 clean all
 
 # Tailscale is already installed in the bazzite base image but its systemd
