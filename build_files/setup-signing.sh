@@ -1,6 +1,8 @@
 #!/bin/bash
 
-set -eoux pipefail
+set -euo pipefail
+trap '[[ $BASH_COMMAND != echo* ]] && [[ $BASH_COMMAND != log* ]] && echo "+ $BASH_COMMAND"' DEBUG
+log() { echo "=== $* ==="; }
 
 ### Ship this image's OWN cosign verification config.
 # The images are cosign-signed in CI (build.yml), but the Bazzite base only trusts

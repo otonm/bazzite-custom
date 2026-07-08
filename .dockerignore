@@ -1,0 +1,21 @@
+# Trim the build context. The Containerfiles only COPY `build_files/` and
+# `cosign.pub`, so everything else is dead weight in the context tarball.
+# Most important: never let the gitignored private signing key leak into a build.
+cosign.key
+
+.git
+.github
+.gitignore
+.dockerignore
+
+# Docs / metadata
+*.md
+LICENSE
+
+# ISO / disk build configs (consumed by build-disk.yml, not the image build)
+*.toml
+disk_config/
+examples/
+
+# Contributor tooling (not used by CI builds)
+Justfile
