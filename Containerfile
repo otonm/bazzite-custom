@@ -1,6 +1,8 @@
 # Allow build scripts to be referenced without being copied into the final image
 FROM scratch AS ctx
 COPY build_files /
+# cosign.pub is consumed by setup-signing.sh to bake in signature verification
+COPY cosign.pub /cosign.pub
 
 # Base Image
 FROM ghcr.io/ublue-os/bazzite-gnome-nvidia:stable

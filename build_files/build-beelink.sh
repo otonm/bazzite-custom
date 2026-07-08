@@ -20,6 +20,10 @@ rm -f \
     /usr/share/applications/bazzite-steam-bpm.desktop \
     /usr/share/applications/*discourse*.desktop
 
+# The base ships a Steam autostart entry in /etc/skel, so every new user gets
+# Steam launching at each login. Steam is removed from this image, so drop it.
+rm -f /etc/skel/.config/autostart/steam.desktop
+
 ### Remove hardware/tooling not used on this AMD/KDE box
 # Intel GPU drivers/utilities (AMD box), System76 laptop drivers, cockpit web
 # admin stack, plus xwiimote and fish per owner preference. Intel *wifi*
@@ -95,6 +99,42 @@ dnf5 swap -y ffmpeg-free ffmpeg --allowerasing || true
 dnf5 install -y rpmfusion-nonfree-release-tainted
 dnf5 install -y --repo=rpmfusion-nonfree-tainted "*-firmware" || true
 
+### OpenRazer for the Razer Basilisk V3 Pro — baked into the image.
+# Previously deferred to `ujust install-openrazer`, but that recipe cannot work on
+# this image, for two independent reasons:
+#   1. rpm-ostree runs the DKMS %posttrans in a bwrap sandbox with read-only /var,
+#      so `dkms install` fails to create /var/lib/dkms (ublue-os/bazzite#5084);
+#   2. OpenRazer 3.12.4 doesn't compile on this kernel — its guard enables the 6-arg
+#      hid_report_raw_event() only at 7.0.10, but the -ogc kernel backported it at
+#      7.0.9 (openrazer/openrazer#2821).
+# Building at image-build time fixes both: /var is writable here and we patch the
+# guard. kernel-devel/gcc/make already ship in the Bazzite base, and the module is
+# rebuilt on every image build so it always matches the image's own kernel.
+KVER=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core | sort -V | tail -1)
+curl -Lo /etc/yum.repos.d/hardware_razer.repo https://openrazer.github.io/hardware:razer.repo
+# Install the -dkms package for its module SOURCE + udev rules only, skipping its
+# %posttrans (a `dkms install` targeting a non-existent running kernel that would fail
+# the build), then recreate the plugdev group its skipped %pre would have made.
+dnf5 install -y --setopt=tsflags=noscripts openrazer-kernel-modules-dkms
+getent group plugdev >/dev/null || groupadd -r plugdev
+# Userspace: daemon + python lib. The kmod dep is already satisfied above, so this
+# triggers no DKMS build.
+dnf5 install -y openrazer-daemon python3-openrazer
+# Patch the kernel-version guard for this kernel's 7.0.9 backport (openrazer#2821).
+# Harmless no-op once upstream ships the fix or the kernel moves past this window.
+sed -i \
+    's/KERNEL_VERSION(7, 0, 10) && LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 0)/KERNEL_VERSION(7, 0, 9) \&\& LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 0)/' \
+    /usr/src/openrazer-driver-*/driver/razerkbd_driver.c
+# Build the four modules against THIS image's kernel and install them into its tree.
+ORZ_SRC=$(ls -d /usr/src/openrazer-driver-*)
+KERNELDIR="/usr/lib/modules/${KVER}/build" make -C "${ORZ_SRC}" driver
+install -d "/usr/lib/modules/${KVER}/extra/openrazer"
+install -m0644 "${ORZ_SRC}"/driver/*.ko "/usr/lib/modules/${KVER}/extra/openrazer/"
+depmod -a "${KVER}"
+# Auto-start the (dbus-activated) daemon at login for all users so RGB/DPI apply
+# without opening a GUI first. Users must still be in plugdev (see README).
+systemctl --global enable openrazer-daemon.service
+
 ### Work around bootc-image-builder ISO depsolve, which cannot read gpgkey=file://
 ### keys from inside the image (osbuild/bootc-image-builder#1188 — archived/unfixed).
 ### Disable gpgcheck on any repo whose key is a local file:// path (Terra, rpmfusion)
@@ -111,10 +151,14 @@ for repo in /etc/yum.repos.d/*.repo; do
     fi
 done
 
-# Razer Basilisk V3 Pro: OpenRazer is NOT installed here. Its kernel module is
-# DKMS-only and can only build against the running kernel, which doesn't exist
-# in a build container. After installing the system, run `ujust install-openrazer`
-# once (pick Polychromatic) and reboot — see the README.
+### Firewall: make "trusted" the default zone for all interfaces.
+# This is a trusted-LAN mini-PC; default all NICs to the trusted zone (allow all)
+# instead of Fedora's default FedoraWorkstation zone. Interfaces not pinned to a
+# specific zone by NetworkManager inherit DefaultZone.
+sed -i 's/^DefaultZone=.*/DefaultZone=trusted/' /etc/firewalld/firewalld.conf
+
+### Bake in cosign signature verification for this image (see setup-signing.sh).
+/ctx/setup-signing.sh
 
 dnf5 clean all
 
