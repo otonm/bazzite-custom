@@ -57,6 +57,40 @@ dnf5 remove -y --no-autoremove \
     kmod-system76-driver \
     kmod-system76-io
 
+# More non-AMD hardware support the base bundles for other GPUs. On AMD, VAAPI
+# resolves through mesa's radeonsi and OpenCL through rusticl/ROCm, so the Intel
+# GPU userspace media/compute stack is never selected — it's pure dead weight.
+# Guarded remove-if-installed so a base that stops shipping any of these can't
+# fail the build; orphaned deps (e.g. intel-gmmlib) are swept by autoremove below.
+prune=(
+    # Intel GPU userspace media/compute
+    intel-media-driver intel-mediasdk onevpl-intel-gpu
+    intel-compute-runtime libva-intel-driver igt-gpu-tools
+    # Intel-only platform daemon (no-op on AMD)
+    thermald
+)
+installed=()
+for p in "${prune[@]}"; do rpm -q "$p" &>/dev/null && installed+=("$p"); done
+[[ ${#installed[@]} -gt 0 ]] && dnf5 remove -y --no-autoremove "${installed[@]}"
+
+# Non-AMD GPU firmware (GPU microcode only — distinct from the iwlwifi / Intel-BT /
+# MediaTek RADIO firmware we keep). Fedora pulls these via weak Supplements, but a
+# linux-firmware(-all) meta may hard-Require them, and removing one would then
+# cascade up to the meta and possibly the kernel. So only remove a firmware package
+# when nothing installed still requires it; otherwise skip (no size win, no risk).
+for fw in intel-gpu-firmware nvidia-gpu-firmware; do
+    rpm -q "$fw" &>/dev/null || continue
+    reqs="$(dnf5 repoquery --installed --whatrequires "$fw" 2>/dev/null || true)"
+    if [[ -z "$reqs" ]]; then
+        dnf5 remove -y --no-autoremove "$fw"
+    else
+        echo "keeping $fw — still required by: $(echo "$reqs" | tr '\n' ' ')"
+    fi
+done
+
+# Guard: the AMD GPU firmware and kernel must survive the pruning above.
+rpm -q amd-gpu-firmware kernel-core >/dev/null
+
 dnf5 autoremove -y
 
 # Re-add the Bluetooth stack explicitly after autoremove so it is guaranteed
