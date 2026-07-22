@@ -106,6 +106,30 @@ jobs:
           # https://linux.die.net/man/1/date
           echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" >> $GITHUB_OUTPUT
 
+      # Record which Bazzite base this image is built from, so the release job can
+      # map our build to Bazzite's own dated releases (44.YYYYMMDD) without pulling
+      # any image. We read the base tag's own org.opencontainers.image.version label
+      # (Bazzite sets this to its release version). Baked below as dev.otonm.base.*.
+      # The base ref is read straight from the Containerfile's FROM line (single
+      # source of truth) rather than a matrix field — a matrix key would change the
+      # auto-generated job name and break the required-status-check contexts.
+      # Note: buildah pulls :stable independently, so a mid-run :stable move could
+      # make this digest differ from what actually built — same-day drift is rare
+      # and the release job also has a date-match fallback, so we don't pin here.
+      - name: Inspect base image
+        id: baseinfo
+        if: steps.detect.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          base="$(grep -m1 '^FROM ghcr.io' './${{ matrix.containerfile }}' | awk '{print $2}')"
+          echo "Base image (from ${{ matrix.containerfile }}): ${base}"
+          raw="$(skopeo inspect "docker://${base}")"
+          ver="$(printf '%s' "$raw" | jq -r '.Labels["org.opencontainers.image.version"] // ""')"
+          dig="$(printf '%s' "$raw" | jq -r '.Digest // ""')"
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "digest=${dig}" >> "$GITHUB_OUTPUT"
+          echo "Base ${base} -> version='${ver}' digest='${dig}'"
+
       # Image metadata for https://artifacthub.io/ - This is optional but is highly recommended so we all can get a index of all the custom images
       # The metadata by itself is not going to do anything, you choose if you want your image to be on ArtifactHub or not.
       - name: Image Metadata
@@ -135,6 +159,8 @@ jobs:
             io.artifacthub.package.logo-url=${{ env.IMAGE_LOGO_URL }}
             io.artifacthub.package.prerelease=false
             containers.bootc=1
+            dev.otonm.base.version=${{ steps.baseinfo.outputs.version }}
+            dev.otonm.base.digest=${{ steps.baseinfo.outputs.digest }}
           sep-tags: " "
           sep-annotations: " "
 
@@ -311,3 +337,176 @@ jobs:
           TAGS: ${{ steps.push.outputs.digest }}
           COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+
+  # After both variants publish, create ONE dated GitHub Release whose notes summarise
+  # (1) what moved in the Bazzite base — sourced from Bazzite's own dated releases
+  # (44.YYYYMMDD), no image pull needed, via the dev.otonm.base.version label we baked
+  # onto each image in build_push — and (2) what changed in this repo since the last
+  # release. Runs once (not per-variant). Only on real publishes; a release is created
+  # only when something actually changed, so empty cron days produce nothing.
+  release:
+    name: Publish GitHub release
+    needs: build_push
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # create releases + their git tags
+      packages: read
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Prepare environment
+        run: |
+          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY,,}" >> ${GITHUB_ENV}
+          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> ${GITHUB_ENV}
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Build changelog and publish release
+        run: |
+          set -euo pipefail
+          REPO_IMG="${IMAGE_REGISTRY}/${IMAGE_NAME}"
+          DATE="$(date -u +%Y%m%d)"
+
+          # Authenticate skopeo so list-tags / inspect aren't rate-limited on GHCR.
+          echo "${GH_TOKEN}" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          # --- Publish gate: today's dated :latest tag must exist -----------------
+          # If it doesn't, no image was published this run (docs-only push, or a run
+          # that didn't push) — so there is nothing to release.
+          if ! skopeo inspect "docker://${REPO_IMG}:latest.${DATE}" >/dev/null 2>&1; then
+            echo "No published :latest.${DATE} tag — nothing to release."
+            exit 0
+          fi
+
+          base_version_of() {   # $1 = full image ref -> dev.otonm.base.version label
+            skopeo inspect "docker://$1" 2>/dev/null \
+              | jq -r '.Labels["dev.otonm.base.version"] // ""'
+          }
+          prev_dated_tag() {    # $1 = variant tag -> greatest <variant>.YYYYMMDD below today
+            skopeo list-tags "docker://${REPO_IMG}" 2>/dev/null \
+              | jq -r '.Tags[]' \
+              | grep -E "^$1\.[0-9]{8}$" \
+              | sort \
+              | awk -v cur="$1.${DATE}" '$0 < cur' \
+              | tail -1
+          }
+          date_of_ver() { printf '%s' "$1" | grep -oE '[0-9]{8}' | head -1; }
+
+          # --- Per variant: new/prev Bazzite base version + boundary dates --------
+          # Dates are 8-digit YYYYMMDD, so integer comparison is chronological.
+          # || true guards each substitution: with pipefail set, a no-match grep or
+          # a missing prev tag (first-ever build) is expected, not fatal.
+          hi_date=""; lo_date=""
+          declare -A NEW_BASE PREV_BASE
+          for v in latest beelink; do
+            nb="$(base_version_of "${REPO_IMG}:${v}.${DATE}" || true)"
+            pt="$(prev_dated_tag "$v" || true)"
+            pb=""; [ -n "$pt" ] && pb="$(base_version_of "${REPO_IMG}:${pt}" || true)"
+            NEW_BASE[$v]="$nb"; PREV_BASE[$v]="$pb"
+
+            # hi: newest base date we're now on (fallback: our own build date).
+            nd="$(date_of_ver "$nb" || true)"; [ -z "$nd" ] && nd="$DATE"
+            if [ -z "$hi_date" ] || [ "$nd" -gt "$hi_date" ]; then hi_date="$nd"; fi
+            # lo: oldest base date we were previously on. Prefer the label; else
+            # date-match on the previous image tag (approximate fallback).
+            pd="$(date_of_ver "$pb" || true)"; [ -z "$pd" ] && pd="$(date_of_ver "$pt" || true)"
+            if [ -n "$pd" ] && { [ -z "$lo_date" ] || [ "$pd" -lt "$lo_date" ]; }; then lo_date="$pd"; fi
+          done
+          echo "Base date range: lo=${lo_date:-none} hi=${hi_date}"
+
+          # --- Base-image section: enumerate Bazzite stable releases in (lo, hi] ---
+          # Bazzite tags stable releases as <major>.YYYYMMDD (e.g. 44.20260721) and
+          # documents package-version bumps in the body under a "Major ..." heading.
+          : > /tmp/bz_releases.json
+          gh api --paginate 'repos/ublue-os/bazzite/releases?per_page=100' \
+            > /tmp/bz_releases.json || echo "warning: could not fetch Bazzite releases" >&2
+          # Selected = stable (non-prerelease, tag major.date) with lo < date <= hi.
+          jq -r --arg lo "${lo_date}" --arg hi "${hi_date}" '
+            .[] | select(.prerelease == false)
+                | select(.tag_name | test("^[0-9]+\\.[0-9]{8}$"))
+                | . as $r | ($r.tag_name | capture("\\.(?<d>[0-9]{8})$").d) as $d
+                | select($d <= $hi and ($lo == "" or $d > $lo))
+                | [$r.tag_name, $r.html_url, ($r.body // "")] | @json | @base64
+          ' /tmp/bz_releases.json > /tmp/bz_selected.txt || true
+
+          {
+            echo "## Base image (Bazzite)"
+            echo
+            if [ -n "${lo_date}" ]; then
+              echo "Base moved from \`${lo_date}\` to \`${hi_date}\`."
+            else
+              echo "Baseline: Bazzite \`${hi_date}\`."
+            fi
+            for v in latest beelink; do
+              echo "- **:${v}** base: \`${PREV_BASE[$v]:-unknown}\` → \`${NEW_BASE[$v]:-unknown}\`"
+            done
+            echo
+            if [ -s /tmp/bz_selected.txt ]; then
+              # newest first
+              tac /tmp/bz_selected.txt | while read -r line; do
+                tag="$(printf '%s' "$line" | base64 -d | jq -r '.[0]')"
+                url="$(printf '%s' "$line" | base64 -d | jq -r '.[1]')"
+                body="$(printf '%s' "$line" | base64 -d | jq -r '.[2]')"
+                echo "### Bazzite ${tag}"
+                # Inline just the "Major ..." section of Bazzite's notes, if present.
+                major="$(printf '%s\n' "$body" | awk '
+                  /^#{1,6}[[:space:]].*[Mm]ajor/ {g=1; print; next}
+                  g && /^#{1,6}[[:space:]]/ {g=0}
+                  g {print}')"
+                [ -n "$major" ] && { printf '%s\n' "$major"; echo; }
+                echo "[Full Bazzite release notes for ${tag}](${url})"
+                echo
+              done
+            else
+              echo "_No Bazzite base changes in this range._"
+              echo
+            fi
+          } > /tmp/base_section.md
+
+          # --- Custom-build section: commits since the previous GitHub release -----
+          prev_rel_tag="$(gh release view --json tagName -q .tagName 2>/dev/null || true)"
+          if [ -n "$prev_rel_tag" ] && git rev-parse -q --verify "refs/tags/${prev_rel_tag}" >/dev/null; then
+            commits="$(git log "${prev_rel_tag}..HEAD" --pretty=format:'- %s (%h)')"
+          else
+            commits=""
+          fi
+          {
+            echo "## Custom build (this repo)"
+            echo
+            if [ -n "$commits" ]; then
+              printf '%s\n' "$commits"
+            elif [ -z "$prev_rel_tag" ]; then
+              echo "Initial release."
+            else
+              echo "_No repository changes since ${prev_rel_tag}._"
+            fi
+            echo
+          } > /tmp/custom_section.md
+
+          # --- Change gate: skip if neither base nor repo changed -----------------
+          if [ ! -s /tmp/bz_selected.txt ] && [ -z "$commits" ] && [ -n "$prev_rel_tag" ]; then
+            echo "No base-image change and no new commits — skipping release."
+            exit 0
+          fi
+
+          # --- Assemble and publish ----------------------------------------------
+          TAG="${DATE:0:4}-${DATE:4:2}-${DATE:6:2}"
+          {
+            cat /tmp/base_section.md
+            cat /tmp/custom_section.md
+            echo "---"
+            echo "Rebase instructions: see the [README](https://github.com/${{ github.repository }}#readme)."
+          } > /tmp/body.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes-file /tmp/body.md
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file /tmp/body.md --target "${GITHUB_SHA}"
+          fi
