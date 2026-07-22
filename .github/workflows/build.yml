@@ -42,16 +42,12 @@ jobs:
           - variant: default
             containerfile: Containerfile
             tag: latest
-            # Keep in sync with the FROM line in Containerfile
-            base: ghcr.io/ublue-os/bazzite-gnome-nvidia:stable
             desc: "Custom Bazzite (GNOME/NVIDIA) without Steam, Lutris, Waydroid. Tailscale enabled by default."
             keywords: "bootc,ublue,universal-blue,bazzite,nvidia,gnome"
           # Beelink variant: KDE + AMD, no nvidia, OpenRazer support, published as :beelink
           - variant: beelink
             containerfile: Containerfile.beelink
             tag: beelink
-            # Keep in sync with the FROM line in Containerfile.beelink
-            base: ghcr.io/ublue-os/bazzite:stable
             desc: "Custom Bazzite (KDE/AMD) for Beelink mini-PCs: no nvidia, AMD tools, Razer Basilisk V3 Pro support, Tailscale enabled."
             keywords: "bootc,ublue,universal-blue,bazzite,kde,amd"
 
@@ -114,6 +110,9 @@ jobs:
       # map our build to Bazzite's own dated releases (44.YYYYMMDD) without pulling
       # any image. We read the base tag's own org.opencontainers.image.version label
       # (Bazzite sets this to its release version). Baked below as dev.otonm.base.*.
+      # The base ref is read straight from the Containerfile's FROM line (single
+      # source of truth) rather than a matrix field — a matrix key would change the
+      # auto-generated job name and break the required-status-check contexts.
       # Note: buildah pulls :stable independently, so a mid-run :stable move could
       # make this digest differ from what actually built — same-day drift is rare
       # and the release job also has a date-match fallback, so we don't pin here.
@@ -122,12 +121,14 @@ jobs:
         if: steps.detect.outputs.docs_only != 'true'
         run: |
           set -euo pipefail
-          raw="$(skopeo inspect docker://${{ matrix.base }})"
+          base="$(grep -m1 '^FROM ghcr.io' './${{ matrix.containerfile }}' | awk '{print $2}')"
+          echo "Base image (from ${{ matrix.containerfile }}): ${base}"
+          raw="$(skopeo inspect "docker://${base}")"
           ver="$(printf '%s' "$raw" | jq -r '.Labels["org.opencontainers.image.version"] // ""')"
           dig="$(printf '%s' "$raw" | jq -r '.Digest // ""')"
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
           echo "digest=${dig}" >> "$GITHUB_OUTPUT"
-          echo "Base ${{ matrix.base }} -> version='${ver}' digest='${dig}'"
+          echo "Base ${base} -> version='${ver}' digest='${dig}'"
 
       # Image metadata for https://artifacthub.io/ - This is optional but is highly recommended so we all can get a index of all the custom images
       # The metadata by itself is not going to do anything, you choose if you want your image to be on ArtifactHub or not.
