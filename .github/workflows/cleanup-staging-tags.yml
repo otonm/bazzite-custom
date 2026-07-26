@@ -1,6 +1,7 @@
 ---
 # Prune the per-PR staging tags that build.yml's "build once, promote on merge"
-# flow leaves in GHCR (`:latest-pr-<N>` / `:beelink-pr-<N>`).
+# flow leaves in GHCR (`:latest-pr-<N>` / `:beelink-pr-<N>`, plus their
+# `-rpmdb` RPM-manifest sidecars).
 #
 # SAFETY: deleting a GHCR *version* removes the underlying manifest and every tag
 # pointing at it. Right after a merge, the staging tag shares its digest with the
@@ -48,7 +49,9 @@ jobs:
             only_staging=true
             prs=()
             for t in "${tags[@]}"; do
-              if [[ "$t" =~ ^(latest|beelink)-pr-([0-9]+)$ ]]; then
+              # `-rpmdb` is the per-PR RPM manifest sidecar build.yml pushes next to
+              # the staging image; it's staging metadata with the same lifecycle.
+              if [[ "$t" =~ ^(latest|beelink)-pr-([0-9]+)(-rpmdb)?$ ]]; then
                 prs+=("${BASH_REMATCH[2]}")
               else
                 only_staging=false
