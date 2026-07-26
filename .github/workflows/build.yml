@@ -242,10 +242,17 @@ jobs:
             raw="$(podman run --rm --entrypoint /usr/bin/rpm "${SRC}" "${args[@]}" || true)"
             [ -n "$raw" ] && break
           done
+          # gpg-pubkey isn't a package — it's ~19 keyring entries sharing one name,
+          # which would collapse into a single unreadable cell in the diff table.
+          raw="$(printf '%s\n' "$raw" | grep -v '^gpg-pubkey	' || true)"
           # Collapse to one line per name — a name can have several versions
           # installed (kernels), and the release job's join keys on the name.
+          # Skip exact NAME+EVR repeats: multilib packages (i686 + x86_64) are two
+          # rpms with identical name and version, which would otherwise render as
+          # "1:26.1.5-2.fc44, 1:26.1.5-2.fc44".
           printf '%s\n' "$raw" \
-            | awk -F'\t' 'NF==2 { if (a[$1] == "") a[$1]=$2; else a[$1]=a[$1] ", " $2 }
+            | awk -F'\t' 'NF==2 { if (seen[$1 SUBSEP $2]++) next
+                                  if (a[$1] == "") a[$1]=$2; else a[$1]=a[$1] ", " $2 }
                           END { for (k in a) print k "\t" a[k] }' \
             | LC_ALL=C sort > "${RUNNER_TEMP}/rpmdb.txt"
           count="$(wc -l < "${RUNNER_TEMP}/rpmdb.txt")"
