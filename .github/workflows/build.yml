@@ -219,6 +219,54 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           oci: false
 
+      # Record the built image's package set so the release job can publish a real
+      # package-level changelog. This is not redundant with the Bazzite base notes:
+      # the stable base only moves on Bazzite's release cadence (~weekly), while our
+      # own layer drifts on every build because common.sh installs Brave and the
+      # podman compose stack from live repos and build-beelink.sh compiles OpenRazer
+      # against the base's kernel-devel. Without this, a frozen-base day reports
+      # nothing even when packages actually moved.
+      # Read here rather than after rechunk: chunkah only re-lays-out the layers, so
+      # package content is identical either side of it.
+      - name: Extract RPM manifest
+        if: steps.detect.outputs.docs_only != 'true' && steps.plan.outputs.promote != 'true'
+        run: |
+          set -euo pipefail
+          SRC="localhost/${IMAGE_NAME}:${{ matrix.tag }}"
+          # Fedora atomic keeps the rpmdb at /usr/lib/sysimage/rpm; rpm's own macros
+          # normally point there already, so only fall back to an explicit --dbpath.
+          raw=""
+          for dbpath in "" /usr/lib/sysimage/rpm; do
+            args=(-qa --qf '%{NAME}\t%{EVR}\n')
+            [ -n "$dbpath" ] && args+=(--dbpath "$dbpath")
+            raw="$(podman run --rm --entrypoint /usr/bin/rpm "${SRC}" "${args[@]}" || true)"
+            [ -n "$raw" ] && break
+          done
+          # Collapse to one line per name — a name can have several versions
+          # installed (kernels), and the release job's join keys on the name.
+          printf '%s\n' "$raw" \
+            | awk -F'\t' 'NF==2 { if (a[$1] == "") a[$1]=$2; else a[$1]=a[$1] ", " $2 }
+                          END { for (k in a) print k "\t" a[k] }' \
+            | LC_ALL=C sort > "${RUNNER_TEMP}/rpmdb.txt"
+          count="$(wc -l < "${RUNNER_TEMP}/rpmdb.txt")"
+          echo "packages in ${SRC}: ${count}"
+          # A truncated manifest published today would render as a bogus "everything
+          # removed" diff tomorrow, so fail loudly instead of publishing one.
+          if [ "$count" -lt 100 ]; then
+            echo "::error::RPM manifest looks wrong (${count} packages) — refusing to publish it"
+            exit 1
+          fi
+          # Package the manifest as a tiny FROM-scratch image so the release job can
+          # read it for a few kB instead of pulling a multi-GB image. Pushed below as
+          # :<tag>-rpmdb by whichever publish path this run is on. Built from its own
+          # context dir, not the repo, so .dockerignore can never silently exclude the
+          # manifest and neither can the repo bloat this image.
+          ctx="${RUNNER_TEMP}/rpmdb-ctx"
+          mkdir -p "${ctx}"
+          mv "${RUNNER_TEMP}/rpmdb.txt" "${ctx}/rpmdb.txt"
+          printf 'FROM scratch\nCOPY rpmdb.txt /rpmdb.txt\n' > "${ctx}/Containerfile"
+          podman build -t "localhost/${IMAGE_NAME}-rpmdb:src" "${ctx}"
+
       # Rechunk splits the single huge build layer into many content-based layers,
       # which improves pull resumability and shrinks update deltas (it does not
       # speed up a fresh download). We use chunkah — the ublue image-template's
@@ -281,6 +329,21 @@ jobs:
           set -euxo pipefail
           podman push "${IMAGE_NAME}:${STAGE}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${STAGE}"
 
+      # The manifest sidecar travels with the staging image so the merge can promote
+      # both together — that's what lets the release job read a manifest on the
+      # promote path, where no image was built locally.
+      - name: Push RPM manifest sidecar (PR)
+        if: >-
+          steps.detect.outputs.docs_only != 'true' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          STAGE: ${{ steps.plan.outputs.staging_tag }}
+        run: |
+          set -euxo pipefail
+          podman push "localhost/${IMAGE_NAME}-rpmdb:src" \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}:${STAGE}-rpmdb"
+
       # Merge with a matching staged image: re-tag it to the release tags instead
       # of rebuilding. Source is public (no creds); dest needs push creds.
       - name: Promote staged image (merge)
@@ -295,6 +358,29 @@ jobs:
               "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${STAGE}" \
               "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${tag}"
           done
+
+      # Same promote, for the manifest sidecar: copy the PR's manifest onto today's
+      # dated tag so the release job finds it exactly where a build path would leave
+      # it. Only the dated sidecar is needed (the release job resolves the previous
+      # dated tag), so we don't publish a moving :<variant>-rpmdb.
+      - name: Promote RPM manifest sidecar (merge)
+        if: steps.plan.outputs.promote == 'true'
+        env:
+          STAGE: ${{ steps.plan.outputs.staging_tag }}
+        run: |
+          set -euxo pipefail
+          # Take the dated tag from the metadata step's own output rather than
+          # recomputing the date, so the sidecar can never end up on a different day
+          # than the image it describes.
+          dated=""
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            case "$tag" in ${{ matrix.tag }}.????????) dated="$tag" ;; esac
+          done
+          [ -n "$dated" ]
+          skopeo copy \
+            --dest-creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${STAGE}-rpmdb" \
+            "docker://${IMAGE_REGISTRY}/${IMAGE_NAME}:${dated}-rpmdb"
 
       # Normal publish for merge-without-staging, cron, and dispatch (i.e. when we
       # actually built above). Skipped when we promoted a prebuilt image.
@@ -315,6 +401,25 @@ jobs:
           tags: ${{ steps.metadata.outputs.tags }}
           username: ${{ env.REGISTRY_USER }}
           password: ${{ env.REGISTRY_PASSWORD }}
+
+      # Companion to Push To GHCR (build path): publish the manifest sidecar under
+      # today's dated tag. Sidecars are metadata, not bootable images, so they are
+      # deliberately left out of the cosign loop below.
+      - name: Push RPM manifest sidecar
+        if: >-
+          github.event_name != 'pull_request' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          steps.detect.outputs.docs_only != 'true' &&
+          steps.plan.outputs.promote != 'true'
+        run: |
+          set -euxo pipefail
+          dated=""
+          for tag in ${{ steps.metadata.outputs.tags }}; do
+            case "$tag" in ${{ matrix.tag }}.????????) dated="$tag" ;; esac
+          done
+          [ -n "$dated" ]
+          podman push "localhost/${IMAGE_NAME}-rpmdb:src" \
+            "${IMAGE_REGISTRY}/${IMAGE_NAME}:${dated}-rpmdb"
 
       # This section is optional and only needs to be enabled if you plan on distributing
       # your project for others to consume. You will need to create a public and private key
@@ -341,9 +446,11 @@ jobs:
   # After both variants publish, create ONE dated GitHub Release whose notes summarise
   # (1) what moved in the Bazzite base — sourced from Bazzite's own dated releases
   # (44.YYYYMMDD), no image pull needed, via the dev.otonm.base.version label we baked
-  # onto each image in build_push — and (2) what changed in this repo since the last
-  # release. Runs once (not per-variant). Only on real publishes; a release is created
-  # only when something actually changed, so empty cron days produce nothing.
+  # onto each image in build_push; (2) the package-level diff of our own images, read
+  # from the `<tag>-rpmdb` manifest sidecars, which is what shows drift on the many
+  # days Bazzite's stable base doesn't move; and (3) what changed in this repo since
+  # the last release. Runs once (not per-variant). Only on real publishes; a release is
+  # created only when something actually changed, so idle cron days produce nothing.
   release:
     name: Publish GitHub release
     needs: build_push
@@ -404,50 +511,96 @@ jobs:
           # || true guards each substitution: with pipefail set, a no-match grep or
           # a missing prev tag (first-ever build) is expected, not fatal.
           hi_date=""; lo_date=""
-          declare -A NEW_BASE PREV_BASE
+          first_build=true      # true only when no previous dated tag exists at all
+          unknown_prev=""       # variants whose previous image carries no base label
+          declare -A NEW_BASE PREV_BASE PREV_TAG
           for v in latest beelink; do
             nb="$(base_version_of "${REPO_IMG}:${v}.${DATE}" || true)"
             pt="$(prev_dated_tag "$v" || true)"
             pb=""; [ -n "$pt" ] && pb="$(base_version_of "${REPO_IMG}:${pt}" || true)"
-            NEW_BASE[$v]="$nb"; PREV_BASE[$v]="$pb"
+            NEW_BASE[$v]="$nb"; PREV_BASE[$v]="$pb"; PREV_TAG[$v]="$pt"
+            [ -n "$pt" ] && first_build=false
 
             # hi: newest base date we're now on (fallback: our own build date).
             nd="$(date_of_ver "$nb" || true)"; [ -z "$nd" ] && nd="$DATE"
             if [ -z "$hi_date" ] || [ "$nd" -gt "$hi_date" ]; then hi_date="$nd"; fi
-            # lo: oldest base date we were previously on. Prefer the label; else
-            # date-match on the previous image tag (approximate fallback).
-            pd="$(date_of_ver "$pb" || true)"; [ -z "$pd" ] && pd="$(date_of_ver "$pt" || true)"
-            if [ -n "$pd" ] && { [ -z "$lo_date" ] || [ "$pd" -lt "$lo_date" ]; }; then lo_date="$pd"; fi
+            # lo: oldest base date we were previously on, taken from the label only.
+            # Never fall back to the previous *image tag's* date: our build date is
+            # always >= the base date, so that fallback can only ever push lo too
+            # high and silently drop Bazzite releases from the range (which is what
+            # dropped 44.20260721 from the 2026-07-22 notes).
+            pd="$(date_of_ver "$pb" || true)"
+            if [ -n "$pd" ]; then
+              if [ -z "$lo_date" ] || [ "$pd" -lt "$lo_date" ]; then lo_date="$pd"; fi
+            elif [ -n "$pt" ]; then
+              unknown_prev="${unknown_prev}${unknown_prev:+, }:${v}"
+            fi
           done
-          echo "Base date range: lo=${lo_date:-none} hi=${hi_date}"
+          echo "Base date range: lo=${lo_date:-none} hi=${hi_date} first_build=${first_build} unknown_prev=${unknown_prev:-none}"
 
           # --- Base-image section: enumerate Bazzite stable releases in (lo, hi] ---
           # Bazzite tags stable releases as <major>.YYYYMMDD (e.g. 44.20260721) and
-          # documents package-version bumps in the body under a "Major ..." heading.
+          # auto-generates notes containing both a curated "Major packages" summary
+          # and per-image-family tables listing every package version change.
           : > /tmp/bz_releases.json
           gh api --paginate 'repos/ublue-os/bazzite/releases?per_page=100' \
             > /tmp/bz_releases.json || echo "warning: could not fetch Bazzite releases" >&2
-          # Selected = stable (non-prerelease, tag major.date) with lo < date <= hi.
-          jq -r --arg lo "${lo_date}" --arg hi "${hi_date}" '
+          # Which Bazzite stable releases (non-prerelease, tag <major>.<date>) to inline:
+          #   lo known      -> the range we actually crossed, lo < date <= hi
+          #   first build    -> just the base we start on, date == hi (an unbounded
+          #                     lower bound here would inline Bazzite's whole history)
+          #   lo unknown     -> nothing; the notes say so rather than guess a range
+          if [ -n "${lo_date}" ]; then bz_mode=range
+          elif [ "${first_build}" = true ]; then bz_mode=first
+          else bz_mode=none
+          fi
+          jq -r --arg lo "${lo_date}" --arg hi "${hi_date}" --arg mode "${bz_mode}" '
             .[] | select(.prerelease == false)
                 | select(.tag_name | test("^[0-9]+\\.[0-9]{8}$"))
                 | . as $r | ($r.tag_name | capture("\\.(?<d>[0-9]{8})$").d) as $d
-                | select($d <= $hi and ($lo == "" or $d > $lo))
+                | select(if   $mode == "range" then ($d > $lo and $d <= $hi)
+                         elif $mode == "first" then ($d == $hi)
+                         else false end)
                 | [$r.tag_name, $r.html_url, ($r.body // "")] | @json | @base64
           ' /tmp/bz_releases.json > /tmp/bz_selected.txt || true
+
+          # Did the base actually move? Only claim a move when some variant's base
+          # version really differs from what it was.
+          base_moved=false
+          for v in latest beelink; do
+            [ "${NEW_BASE[$v]}" != "${PREV_BASE[$v]}" ] && base_moved=true
+          done
 
           {
             echo "## Base image (Bazzite)"
             echo
-            if [ -n "${lo_date}" ]; then
-              echo "Base moved from \`${lo_date}\` to \`${hi_date}\`."
+            if [ "${first_build}" = true ]; then
+              echo "Baseline: Bazzite \`${NEW_BASE[latest]:-$hi_date}\`."
+              echo
+              for v in latest beelink; do
+                echo "- **:${v}** base: \`${NEW_BASE[$v]:-unknown}\`"
+              done
+            elif [ -z "${lo_date}" ]; then
+              # base_moved is true here only because the previous base version was
+              # unreadable, so there's no range to state — don't render "from `` to X".
+              echo "Now on Bazzite \`${NEW_BASE[latest]:-unknown}\`."
+            elif [ "${base_moved}" = false ]; then
+              # Bazzite's stable channel moves on its release cadence (~weekly), so
+              # most daily cron builds legitimately sit on an unchanged base. Say so
+              # plainly instead of rendering "moved from X to X".
+              echo "Base unchanged: Bazzite \`${NEW_BASE[latest]:-unknown}\`."
             else
-              echo "Baseline: Bazzite \`${hi_date}\`."
+              echo "Base moved from \`${lo_date}\` to \`${hi_date}\`."
+              echo
+              for v in latest beelink; do
+                echo "- **:${v}** base: \`${PREV_BASE[$v]:-unknown}\` → \`${NEW_BASE[$v]:-unknown}\`"
+              done
             fi
-            for v in latest beelink; do
-              echo "- **:${v}** base: \`${PREV_BASE[$v]:-unknown}\` → \`${NEW_BASE[$v]:-unknown}\`"
-            done
             echo
+            if [ -n "${unknown_prev}" ]; then
+              echo "_Previous base version unknown for ${unknown_prev} — base changes below may be incomplete._"
+              echo
+            fi
             if [ -s /tmp/bz_selected.txt ]; then
               # newest first
               tac /tmp/bz_selected.txt | while read -r line; do
@@ -455,20 +608,100 @@ jobs:
                 url="$(printf '%s' "$line" | base64 -d | jq -r '.[1]')"
                 body="$(printf '%s' "$line" | base64 -d | jq -r '.[2]')"
                 echo "### Bazzite ${tag}"
-                # Inline just the "Major ..." section of Bazzite's notes, if present.
+                # Bazzite's notes are auto-generated with a fixed set of headings:
+                # "Major packages" (a curated kernel/Mesa/KDE/NVIDIA summary), then
+                # one "<family> Images" table per image family listing every package
+                # version change, then "Commits" and "How to rebase" which we skip.
+                # `#+` rather than `#{1,6}` so we don't rely on awk interval support.
                 major="$(printf '%s\n' "$body" | awk '
-                  /^#{1,6}[[:space:]].*[Mm]ajor/ {g=1; print; next}
-                  g && /^#{1,6}[[:space:]]/ {g=0}
+                  /^#+[[:space:]]*[Mm]ajor/ {g=1; print; next}
+                  g && /^#+[[:space:]]/ {g=0}
                   g {print}')"
                 [ -n "$major" ] && { printf '%s\n' "$major"; echo; }
+                # The per-family tables are the full package changelog and can run to
+                # a hundred-plus rows, so collapse them. The blank line after
+                # <summary> is required for GitHub to render the markdown tables.
+                tables="$(printf '%s\n' "$body" | awk '
+                  /^#+[[:space:]]*.*Images[[:space:]]*$/ {g=1; print; next}
+                  g && /^#+[[:space:]]/ {g=0}
+                  g {print}')"
+                if [ -n "$tables" ]; then
+                  echo "<details><summary>Full package changes in ${tag}</summary>"
+                  echo
+                  printf '%s\n' "$tables"
+                  echo
+                  echo "</details>"
+                  echo
+                fi
                 echo "[Full Bazzite release notes for ${tag}](${url})"
                 echo
               done
-            else
-              echo "_No Bazzite base changes in this range._"
+            elif [ "${base_moved}" = true ] && [ -n "${lo_date}" ]; then
+              # A real range we crossed, but no Bazzite release matched it — e.g. a
+              # rebuild of the same release, or notes we couldn't fetch. Worth saying.
+              echo "_No matching Bazzite release notes for this range._"
               echo
             fi
           } > /tmp/base_section.md
+
+          # --- Package section: what actually changed inside our published images --
+          # The base section above only covers Bazzite's own releases. Our layer also
+          # pulls Brave, the podman compose stack and kernel-devel from live repos on
+          # every build, so on a frozen-base day this is the only section that can
+          # show real movement. build_push publishes each image's package list as a
+          # tiny `<tag>-rpmdb` sidecar image (a FROM-scratch image holding one file),
+          # so reading it costs a few kB rather than a multi-GB image pull.
+          fetch_rpmdb() {   # $1 = image tag (without -rpmdb), $2 = output file
+            local d blob
+            d="$(mktemp -d)"
+            skopeo copy "docker://${REPO_IMG}:$1-rpmdb" "dir:${d}" >/dev/null 2>&1 || return 1
+            blob="$(jq -r '.layers[0].digest' "${d}/manifest.json" | cut -d: -f2)"
+            # No -z: GNU tar auto-detects compression, so this works whether the
+            # sidecar layer was pushed gzipped or plain.
+            tar -xOf "${d}/${blob}" rpmdb.txt > "$2" 2>/dev/null || return 1
+            [ -s "$2" ]
+          }
+
+          pkg_changed=""
+          {
+            echo "## Packages in this build"
+            echo
+            for v in latest beelink; do
+              newf="/tmp/rpmdb-new-${v}.txt"; prevf="/tmp/rpmdb-prev-${v}.txt"
+              if ! fetch_rpmdb "${v}.${DATE}" "$newf"; then
+                echo "- **:${v}** — _no package manifest published for this build._"
+                continue
+              fi
+              if [ -z "${PREV_TAG[$v]}" ] || ! fetch_rpmdb "${PREV_TAG[$v]}" "$prevf"; then
+                echo "- **:${v}** — _no package manifest on the previous build, so no diff yet ($(wc -l < "$newf") packages)._"
+                continue
+              fi
+              # Both manifests are LC_ALL=C-sorted "name<TAB>version" with one line
+              # per name, so a full outer join keyed on the name yields every change:
+              # missing left = added, missing right = removed, else updated.
+              rows="$(LC_ALL=C join -t"$(printf '\t')" -a1 -a2 -e '' -o 0,1.2,2.2 \
+                        "$prevf" "$newf" \
+                      | awk -F'\t' '$2 != $3 {
+                          if ($2 == "")      printf "| ➕ | %s | | %s |\n", $1, $3;
+                          else if ($3 == "") printf "| ❌ | %s | %s | |\n", $1, $2;
+                          else               printf "| 🔄 | %s | %s | %s |\n", $1, $2, $3;
+                        }')"
+              if [ -z "$rows" ]; then
+                echo "- **:${v}** — no package changes since \`${PREV_TAG[$v]}\`."
+              else
+                pkg_changed=1
+                echo "<details><summary><b>:${v}</b> — $(printf '%s\n' "$rows" | wc -l) package changes since <code>${PREV_TAG[$v]}</code></summary>"
+                echo
+                echo "| | Name | Previous | New |"
+                echo "| --- | --- | --- | --- |"
+                printf '%s\n' "$rows"
+                echo
+                echo "</details>"
+                echo
+              fi
+            done
+            echo
+          } > /tmp/pkg_section.md
 
           # --- Custom-build section: commits since the previous GitHub release -----
           prev_rel_tag="$(gh release view --json tagName -q .tagName 2>/dev/null || true)"
@@ -490,9 +723,14 @@ jobs:
             echo
           } > /tmp/custom_section.md
 
-          # --- Change gate: skip if neither base nor repo changed -----------------
-          if [ ! -s /tmp/bz_selected.txt ] && [ -z "$commits" ] && [ -n "$prev_rel_tag" ]; then
-            echo "No base-image change and no new commits — skipping release."
+          # --- Change gate: skip if nothing at all changed ------------------------
+          # Includes the package diff, so a frozen-base day with no commits still
+          # gets a release when packages actually moved. Builds aren't reproducible
+          # but package *sets* are stable, so genuinely idle days still produce
+          # nothing.
+          if [ ! -s /tmp/bz_selected.txt ] && [ -z "$commits" ] && [ -z "$pkg_changed" ] \
+             && [ -n "$prev_rel_tag" ]; then
+            echo "No base-image change, no package changes and no new commits — skipping release."
             exit 0
           fi
 
@@ -500,6 +738,7 @@ jobs:
           TAG="${DATE:0:4}-${DATE:4:2}-${DATE:6:2}"
           {
             cat /tmp/base_section.md
+            cat /tmp/pkg_section.md
             cat /tmp/custom_section.md
             echo "---"
             echo "Rebase instructions: see the [README](https://github.com/${{ github.repository }}#readme)."
