@@ -44,8 +44,10 @@ rm -f /usr/share/applications/bazzite-documentation.desktop
 
 ### Remove hardware/tooling not used on this AMD/KDE box
 # Intel GPU drivers/utilities (AMD box), System76 laptop drivers, cockpit web
-# admin stack, plus xwiimote and fish per owner preference. Intel *wifi*
-# firmware is kept (re-added below) — only the Intel GPU drivers go.
+# admin stack, cardwire (base's switcheroo-control replacement for multi-GPU/MUX
+# switching — this box has integrated graphics only, no discrete GPU to switch
+# to), plus xwiimote and fish per owner preference. Intel *wifi* firmware is
+# kept (re-added below) — only the Intel GPU drivers go.
 dnf5 remove -y --no-autoremove \
     cockpit\* \
     xwiimote-ng \
@@ -55,7 +57,9 @@ dnf5 remove -y --no-autoremove \
     system76-driver \
     system76-io \
     kmod-system76-driver \
-    kmod-system76-io
+    kmod-system76-io \
+    cardwire \
+    cardwire-gui
 
 # More non-AMD hardware support the base bundles for other GPUs. On AMD, VAAPI
 # resolves through mesa's radeonsi and OpenCL through rusticl/ROCm, so the Intel
