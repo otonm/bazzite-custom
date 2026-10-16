@@ -198,6 +198,39 @@ install -Dm755 /ctx/openrazer-plugdev-setup /usr/libexec/openrazer-plugdev-setup
 install -Dm644 /ctx/openrazer-plugdev.service /usr/lib/systemd/system/openrazer-plugdev.service
 systemctl enable openrazer-plugdev.service
 
+### RustDesk — the "unattended-wayland" build, for prompt-free remote access.
+# This variant's root `rustdesk --service` reads the screen straight from DRM/KMS
+# (libdrmtap, dlopen'd from /usr/lib/rustdesk) instead of the xdg-desktop-portal, so
+# there is no per-connection consent dialog and it works at the SDDM login screen
+# (rustdesk/rustdesk#15420). It falls back to the portal (and its prompt) only if DRM
+# capture fails, e.g. no active display output. Upstream ships it only as a .deb, so
+# install the Fedora names of its deps (from RustDesk's own rpm spec + the deb's
+# Depends), then unpack the deb payload — all of it under /usr, so nothing needs the
+# /opt relocation. Pinned + checksummed; bump RD_VER and RD_SHA256 together.
+RD_VER=1.5.0
+RD_SHA256=9eed5e9f4b47af8ed41585c399cb2c0d2870e801c99645330dea1063ad844e09
+dnf5 install -y \
+    gtk3 libxcb libXfixes libXtst alsa-lib pulseaudio-libs libva libdrm \
+    gstreamer1-plugins-base pipewire-gstreamer mesa-libEGL libglvnd-gles \
+    libxdo libayatana-appindicator-gtk3
+RD_TMP=$(mktemp -d)
+curl -fLo "${RD_TMP}/rustdesk.deb" \
+    "https://github.com/rustdesk/rustdesk/releases/download/${RD_VER}/rustdesk-unattended-wayland-${RD_VER}-x86_64.deb"
+echo "${RD_SHA256}  ${RD_TMP}/rustdesk.deb" | sha256sum -c
+(cd "${RD_TMP}" && ar x rustdesk.deb data.tar.xz)
+tar -xJf "${RD_TMP}/data.tar.xz" -C / --no-overwrite-dir
+rm -rf "${RD_TMP}"
+# Fail the build if a shared library didn't resolve (a dep missing from the list above).
+if ldd /usr/share/rustdesk/rustdesk /usr/share/rustdesk/lib/librustdesk.so \
+    /usr/lib/rustdesk/libdrmtap.so.0 | grep 'not found'; then
+    exit 1
+fi
+# What the deb's postinst would have done (it can't run here): CLI symlink + root service.
+ln -sf /usr/share/rustdesk/rustdesk /usr/bin/rustdesk
+sed 's|pkill|/usr/bin/pkill|g' /usr/share/rustdesk/files/systemd/rustdesk.service \
+    > /usr/lib/systemd/system/rustdesk.service
+systemctl enable rustdesk.service
+
 ### Shared steps (podman, Brave, tailscale, flatpak unblock) — see common.sh
 /ctx/common.sh
 
