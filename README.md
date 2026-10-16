@@ -11,7 +11,7 @@ Both variants live in one GHCR package — `ghcr.io/otonm/bazzite-custom` — un
 
 **`:latest`** — Steam, Lutris, Waydroid removed; Tailscale enabled.
 
-**`:beelink`** — for Beelink (and other AMD) mini-PCs: KDE Plasma, full AMD CPU+iGPU stack, no nvidia. Adds AMD diagnostic tools (`radeontop`, `nvtop`, `vulkan-tools`, `libva-utils`). **Razer Basilisk V3 Pro** support (OpenRazer) is baked in — no post-install step (see below). Removes Steam, Lutris, Waydroid, and the default launcher Flatpak (ProtonUp — reinstallable from Flathub). The Discourse community launcher and the Steam login-autostart are removed. Firewall defaults to the `trusted` zone. Tailscale enabled.
+**`:beelink`** — for Beelink (and other AMD) mini-PCs: KDE Plasma, full AMD CPU+iGPU stack, no nvidia. Adds AMD diagnostic tools (`radeontop`, `nvtop`, `vulkan-tools`, `libva-utils`). **Razer Basilisk V3 Pro** support (OpenRazer) is baked in — no post-install step (see below). **RustDesk** (unattended-Wayland build) is baked in for prompt-free remote access — set a password once (see [RustDesk](#rustdesk-beelink)). Removes Steam, Lutris, Waydroid, and the default launcher Flatpak (ProtonUp — reinstallable from Flathub). The Discourse community launcher and the Steam login-autostart are removed. Firewall defaults to the `trusted` zone. Tailscale enabled.
 
 ---
 
@@ -19,6 +19,7 @@ Both variants live in one GHCR package — `ghcr.io/otonm/bazzite-custom` — un
 
 - **One matrix, both images** — `.github/workflows/build.yml` builds and signs both tags from `main` in a matrix. GitHub runs scheduled workflows only on the **default branch**, so building both from `main` is what lets both auto-rebuild.
 - **OpenRazer** (`:beelink`) — baked into the image, built from source against the image's own kernel at build time. `ujust install-openrazer` can't work here (rpm-ostree's read-only-`/var` DKMS sandbox, and an OpenRazer/kernel version-guard mismatch), so the build script compiles the module directly instead. See [Razer Basilisk V3 Pro](#razer-basilisk-v3-pro-beelink).
+- **RustDesk** (`:beelink`) — the upstream `rustdesk-unattended-wayland` `.deb` (pinned version + sha256), unpacked into `/usr` at build time since upstream ships no RPM of it. Its root service captures the screen via DRM/KMS, so no Wayland consent prompt. See [RustDesk](#rustdesk-beelink).
 - **Signing** — each image is signed with cosign (`cosign.pub` is committed; the private key lives in the `SIGNING_SECRET` repo secret), and each image also *ships* the matching verification policy so machines can rebase to the signed ref and have updates signature-verified.
 
 ### Automatic updates
@@ -111,6 +112,8 @@ just run-vm-iso localhost/bazzite-custom beelink   # opens a browser-based QEMU 
 
    **Razer Basilisk V3 Pro (beelink only)** — OpenRazer (daemon + kernel module) is baked into the image, and a boot service adds your user to the `plugdev` group that the daemon requires, so there's nothing to install. Just log in (the group is applied at login). Optionally install a GUI to configure the mouse: `flatpak install flathub app.polychromatic.controller` (Polychromatic) or `xyz.z3ntu.razergenie` (Razer Genie).
 
+   **RustDesk (beelink only)** — the service is already running; set a password and enable direct-IP access as described in [RustDesk](#rustdesk-beelink).
+
 ---
 
 ## Rebasing an existing Bazzite / Fedora Atomic system
@@ -143,6 +146,45 @@ rpm-ostree status   # should show ostree-image-signed:docker://ghcr.io/otonm/baz
 - OpenRazer controls the mouse over **wired USB or the 2.4 GHz dongle** (this mouse is PID `1532:00AB`) — **not** over Bluetooth.
 - **Secure Boot:** the baked module is **unsigned**, so it loads only with Secure Boot **disabled** (the case on the target box). With Secure Boot enforcing, the kernel refuses unsigned modules and OpenRazer won't work until the module is signed with an enrolled MOK.
 - **Why it's baked and not `ujust install-openrazer`:** two independent blockers make the runtime recipe fail on an immutable image — (1) rpm-ostree runs the DKMS `%posttrans` in a sandbox with read-only `/var`, so `dkms install` can't create `/var/lib/dkms` ([bazzite#5084](https://github.com/ublue-os/bazzite/issues/5084)); and (2) OpenRazer 3.12.4 doesn't compile on the `-ogc` 7.0.9 kernel — a version-guard off-by-one against a backported HID API change ([openrazer#2821](https://github.com/openrazer/openrazer/issues/2821)). Building at image-build time (writable `/var`, guard patched, module compiled against the image kernel) avoids both, and the module is rebuilt on every daily image so it always matches the kernel.
+
+---
+
+## RustDesk (beelink)
+
+`:beelink` ships RustDesk's **unattended-Wayland** build (`rustdesk-unattended-wayland`, currently 1.5.0) with `rustdesk.service` enabled. Unlike the regular Linux build — which captures through the xdg-desktop-portal and pops a consent dialog on every connection — its root service reads the screen directly from DRM/KMS ([rustdesk#15420](https://github.com/rustdesk/rustdesk/pull/15420)). So:
+
+- **No Wayland consent prompt**, and it works at the **SDDM login screen** (before anyone logs in).
+- Mouse/keyboard go through `uinput` from the root service — no input-permission prompt either.
+- **Caveat:** if DRM capture fails (most commonly: no active display output — no monitor attached, or the output powered off), it falls back to the portal, which *does* prompt. On a headless box, use an HDMI dummy plug.
+
+### Configure: direct TCP + permanent password, no click-to-accept
+
+Run once on the beelink. The service runs as root, so settings go to `/root/.config/rustdesk/RustDesk2.toml` (persistent across image updates — never bake the password into the image):
+
+```bash
+# Accept direct TCP connections (default port 21118)
+sudo rustdesk --option direct-server Y
+sudo rustdesk --option direct-access-port 21118      # optional; 21118 is the default
+
+# Permanent password only, and accept on password alone (no click-to-accept)
+sudo rustdesk --password 'your-strong-password'
+sudo rustdesk --option verification-method use-permanent-password
+sudo rustdesk --option approve-mode password
+
+# Accept connections even when the RustDesk window isn't open
+sudo rustdesk --option allow-only-conn-window-open N
+
+# Optional: only accept from Tailscale addresses
+sudo rustdesk --option whitelist '100.64.0.0/10'
+
+sudo systemctl restart rustdesk
+```
+
+Connect from the client by typing `<beelink-ip>:21118` (or just `<beelink-ip>` on the default port) in the ID box, then the password. No firewall change is needed (the image defaults to the `trusted` zone). For off-LAN access, use the machine's Tailscale IP rather than port-forwarding 21118.
+
+### Updating RustDesk
+
+The version is **pinned** (`RD_VER` + `RD_SHA256` in `build_files/build-beelink.sh`) — daily rebuilds don't pick up new releases. To bump: take the new `rustdesk-unattended-wayland-<ver>-x86_64.deb` sha256 from the release (`gh api repos/rustdesk/rustdesk/releases/tags/<ver> -q '.assets[]|select(.name|test("unattended-wayland.*x86_64"))|.digest'`), update both variables, and open a PR. Because it's unpacked from a `.deb`, RustDesk doesn't appear in the release notes' package diff (`rpm -qa`).
 
 ---
 
@@ -183,6 +225,8 @@ bazzite-custom/
 ## Troubleshooting
 
 **Razer mouse not detected / "OpenRazer daemon is not running".** The daemon needs your user in `plugdev`; the baked `openrazer-plugdev.service` handles this, but if you logged in before it ran, log out and back in. To check: `id -nG | grep plugdev` and `systemctl --user status openrazer-daemon`. If you must add it manually, use `sudo usermod -aG plugdev "$USER"` (the `gpasswd` command the daemon suggests fails on atomic). Confirm the mouse is on the dongle or cable (not Bluetooth) and shows up: `lsusb | grep 1532`. The kernel module is baked in and rebuilt on every daily image, so it always matches the running kernel — check it's loaded with `lsmod | grep razer` (or `modprobe razermouse`). If a future OpenRazer/kernel combo ever fails to build, the image build itself fails in CI (the tag simply won't update) rather than shipping a broken module.
+
+**RustDesk asks for screen-sharing permission / shows a black screen.** DRM capture failed and it fell back to the portal — check the display output is active (monitor or dummy plug attached, not powered off), then grep the service logs for the reason: `sudo grep -ri drm /root/.local/share/logs/RustDesk/` (and `sudo journalctl -u rustdesk -b`). Check the service with `systemctl status rustdesk`. If the image build fails at RustDesk's `ldd … not found` check, a shared library is missing from the `dnf5 install` list in `build-beelink.sh` — add the Fedora package that provides it.
 
 **Build fails at `dnf5 remove`.** A package name may differ on the base image. Verify against the live image and adjust the relevant `build*.sh`:
 
