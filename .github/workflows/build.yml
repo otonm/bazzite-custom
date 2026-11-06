@@ -755,8 +755,25 @@ jobs:
             echo "Rebase instructions: see the [README](https://github.com/${{ github.repository }}#readme)."
           } > /tmp/body.md
 
+          # GitHub caps release bodies at 125000 chars; a Fedora major bump changes
+          # nearly every package and blows past it. Then collapse each <details> table
+          # to its summary line and attach the full notes as an asset instead.
+          assets=()
+          if [ "$(wc -c < /tmp/body.md)" -gt 125000 ]; then
+            mv /tmp/body.md /tmp/release-notes-full.md
+            awk '
+              /^<details><summary>/ { s = $0; sub(/<\/summary>.*/, "", s); gsub(/<[^>]*>/, "", s)
+                                      print "- " s " — _full table in the attached release-notes-full.md_"
+                                      skip = 1; next }
+              skip && /^<\/details>/ { skip = 0; next }
+              !skip
+            ' /tmp/release-notes-full.md > /tmp/body.md
+            assets=(/tmp/release-notes-full.md)
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "$TAG" --notes-file /tmp/body.md
+            [ ${#assets[@]} -eq 0 ] || gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$TAG" --title "$TAG" --notes-file /tmp/body.md --target "${GITHUB_SHA}"
+            gh release create "$TAG" --title "$TAG" --notes-file /tmp/body.md --target "${GITHUB_SHA}" "${assets[@]}"
           fi
