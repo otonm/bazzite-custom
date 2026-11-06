@@ -279,7 +279,7 @@ jobs:
       # speed up a fresh download). We use chunkah — the ublue image-template's
       # recommended/future-default rechunker (its `just rechunk` recipe) — which,
       # unlike legacy-rechunk, runs entirely in rootless podman (no root store
-      # bridge) and preserves the image config/labels via CHUNKAH_CONFIG_STR.
+      # bridge) and preserves the image config/labels via --config.
       # chunkah reads the built image via an image mount, emits content-based
       # layers, and pipes the result back into podman under the same tag; we then
       # re-apply the remaining metadata tags so the push step publishes it.
@@ -289,12 +289,16 @@ jobs:
         run: |
           set -euxo pipefail
           SRC="localhost/${IMAGE_NAME}:${{ matrix.tag }}"
-          export CHUNKAH_CONFIG_STR="$(podman inspect "${SRC}")"
+          # Pass the config as a file, not CHUNKAH_CONFIG_STR: the F45 base's layer
+          # history pushes `podman inspect` past the kernel's 128 KiB per-env-string
+          # limit ("Argument list too long").
+          podman inspect "${SRC}" > "${RUNNER_TEMP}/chunkah-config.json"
           podman run --rm \
             --mount=type=image,src="${SRC}",target=/chunkah \
-            -e CHUNKAH_CONFIG_STR \
+            -v "${RUNNER_TEMP}/chunkah-config.json:/run/chunkah-config.json:ro" \
             quay.io/coreos/chunkah:latest \
             build \
+            --config /run/chunkah-config.json \
             --verbose \
             --compressed \
             --max-layers 128 \

@@ -46,7 +46,9 @@ rm -f /usr/share/applications/bazzite-documentation.desktop
 # Intel GPU drivers/utilities (AMD box), System76 laptop drivers, cockpit web
 # admin stack, cardwire (base's switcheroo-control replacement for multi-GPU/MUX
 # switching — this box has integrated graphics only, no discrete GPU to switch
-# to), plus xwiimote and fish per owner preference. Intel *wifi* firmware is
+# to), logitech-trueforce (racing-wheel driver; its `dkms-logitech-trueforce
+# if dkms` dep is unresolvable and blocks the OpenRazer dkms install), plus
+# xwiimote and fish per owner preference. Intel *wifi* firmware is
 # kept (re-added below) — only the Intel GPU drivers go.
 dnf5 remove -y --no-autoremove \
     cockpit\* \
@@ -59,7 +61,8 @@ dnf5 remove -y --no-autoremove \
     kmod-system76-driver \
     kmod-system76-io \
     cardwire \
-    cardwire-gui
+    cardwire-gui \
+    logitech-trueforce
 
 # More non-AMD hardware support the base bundles for other GPUs. On AMD, VAAPI
 # resolves through mesa's radeonsi and OpenCL through rusticl/ROCm, so the Intel
@@ -97,12 +100,10 @@ rpm -q amd-gpu-firmware kernel-core >/dev/null
 
 dnf5 autoremove -y
 
-# Re-add the Bluetooth stack explicitly after autoremove so it is guaranteed
-# present and marked user-installed (autoremove can otherwise sweep it).
-dnf5 install -y \
-    bluez \
-    bluez-obexd \
-    bluedevil
+# Mark the Bluetooth stack user-installed so a later autoremove can't sweep it.
+# Bazzite (F45+) ships Terra's bluez, which conflicts with Fedora's, so don't
+# reinstall it from Fedora.
+dnf5 mark user -y terra-bluez terra-bluez-obexd bluedevil
 
 ### Trim default Flatpaks (emulation + game launchers).
 # Drop entries from Bazzite's default *install* list (consumed by
