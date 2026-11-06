@@ -169,7 +169,11 @@ curl -Lo /etc/yum.repos.d/hardware_razer.repo https://openrazer.github.io/hardwa
 # Install the -dkms package for its module SOURCE + udev rules only, skipping its
 # %posttrans (a `dkms install` targeting a non-existent running kernel that would fail
 # the build), then recreate the plugdev group its skipped %pre would have made.
-dnf5 install -y --setopt=tsflags=noscripts openrazer-kernel-modules-dkms
+# --nodeps: we build the modules ourselves, so skip its `dkms` dep — on F45 that
+# can't be installed anyway (the base's logitech-trueforce requires an unavailable
+# dkms-logitech-trueforce whenever dkms is present).
+dnf5 download -y --destdir /tmp/openrazer openrazer-kernel-modules-dkms
+rpm -i --nodeps --noscripts /tmp/openrazer/openrazer-kernel-modules-dkms-*.rpm
 getent group plugdev >/dev/null || groupadd -r plugdev
 # Userspace: daemon + python lib. The kmod dep is already satisfied above, so this
 # triggers no DKMS build.
