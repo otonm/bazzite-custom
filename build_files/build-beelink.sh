@@ -46,7 +46,9 @@ rm -f /usr/share/applications/bazzite-documentation.desktop
 # Intel GPU drivers/utilities (AMD box), System76 laptop drivers, cockpit web
 # admin stack, cardwire (base's switcheroo-control replacement for multi-GPU/MUX
 # switching — this box has integrated graphics only, no discrete GPU to switch
-# to), plus xwiimote and fish per owner preference. Intel *wifi* firmware is
+# to), logitech-trueforce (racing-wheel driver; its `dkms-logitech-trueforce
+# if dkms` dep is unresolvable and blocks the OpenRazer dkms install), plus
+# xwiimote and fish per owner preference. Intel *wifi* firmware is
 # kept (re-added below) — only the Intel GPU drivers go.
 dnf5 remove -y --no-autoremove \
     cockpit\* \
@@ -59,7 +61,8 @@ dnf5 remove -y --no-autoremove \
     kmod-system76-driver \
     kmod-system76-io \
     cardwire \
-    cardwire-gui
+    cardwire-gui \
+    logitech-trueforce
 
 # More non-AMD hardware support the base bundles for other GPUs. On AMD, VAAPI
 # resolves through mesa's radeonsi and OpenCL through rusticl/ROCm, so the Intel
@@ -169,11 +172,7 @@ curl -Lo /etc/yum.repos.d/hardware_razer.repo https://openrazer.github.io/hardwa
 # Install the -dkms package for its module SOURCE + udev rules only, skipping its
 # %posttrans (a `dkms install` targeting a non-existent running kernel that would fail
 # the build), then recreate the plugdev group its skipped %pre would have made.
-# --nodeps: we build the modules ourselves, so skip its `dkms` dep — on F45 that
-# can't be installed anyway (the base's logitech-trueforce requires an unavailable
-# dkms-logitech-trueforce whenever dkms is present).
-dnf5 download -y --destdir /tmp/openrazer openrazer-kernel-modules-dkms
-rpm -i --nodeps --noscripts /tmp/openrazer/openrazer-kernel-modules-dkms-*.rpm
+dnf5 install -y --setopt=tsflags=noscripts openrazer-kernel-modules-dkms
 getent group plugdev >/dev/null || groupadd -r plugdev
 # Userspace: daemon + python lib. The kmod dep is already satisfied above, so this
 # triggers no DKMS build.
