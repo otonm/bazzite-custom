@@ -100,7 +100,7 @@ dnf5 autoremove -y
 # Mark the Bluetooth stack user-installed so a later autoremove can't sweep it.
 # Bazzite (F45+) ships Terra's bluez, which conflicts with Fedora's, so don't
 # reinstall it from Fedora.
-dnf5 mark user terra-bluez terra-bluez-obexd bluedevil
+dnf5 mark user -y terra-bluez terra-bluez-obexd bluedevil
 
 ### Trim default Flatpaks (emulation + game launchers).
 # Drop entries from Bazzite's default *install* list (consumed by
