@@ -9,7 +9,9 @@ log "Removing gaming packages"
 dnf5 remove -y --no-autoremove \
     steam \
     steam-devices \
-    lutris
+    lutris \
+    umu-launcher \
+    umu-wrapper
 
 # Waydroid is not present on Nvidia builds — suppress failure if absent
 dnf5 remove -y --no-autoremove waydroid waydroid-selinux 2>/dev/null || true
