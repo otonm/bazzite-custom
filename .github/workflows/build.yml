@@ -517,6 +517,77 @@ jobs:
           }
           date_of_ver() { printf '%s' "$1" | grep -oE '[0-9]{8}' | head -1; }
 
+          # --- Package manifests of today's images ---------------------------------
+          # build_push publishes each image's package list as a tiny `<tag>-rpmdb`
+          # sidecar image (a FROM-scratch image holding one file), so reading it costs
+          # a few kB rather than a multi-GB image pull. Fetched up front: the base
+          # section filters Bazzite's notes against them, the package section diffs them.
+          fetch_rpmdb() {   # $1 = image tag (without -rpmdb), $2 = output file
+            local d blob
+            d="$(mktemp -d)"
+            skopeo copy "docker://${REPO_IMG}:$1-rpmdb" "dir:${d}" >/dev/null 2>&1 || return 1
+            blob="$(jq -r '.layers[0].digest' "${d}/manifest.json" | cut -d: -f2)"
+            # No -z: GNU tar auto-detects compression, so this works whether the
+            # sidecar layer was pushed gzipped or plain.
+            tar -xOf "${d}/${blob}" rpmdb.txt > "$2" 2>/dev/null || return 1
+            [ -s "$2" ]
+          }
+          for v in latest beelink; do
+            fetch_rpmdb "${v}.${DATE}" "/tmp/rpmdb-new-${v}.txt" || rm -f "/tmp/rpmdb-new-${v}.txt"
+          done
+          # Names installed in either image. Only built when BOTH manifests are present,
+          # so a missing one can't hide rows that apply to the other variant.
+          rm -f /tmp/installed.txt
+          if [ -s /tmp/rpmdb-new-latest.txt ] && [ -s /tmp/rpmdb-new-beelink.txt ]; then
+            cut -f1 /tmp/rpmdb-new-latest.txt /tmp/rpmdb-new-beelink.txt | sort -u > /tmp/installed.txt
+          fi
+
+          # Bazzite's notes cover all its images (deck, nvidia-lts, waydroid...), most
+          # of which don't apply to ours. Keep only rows for packages installed in our
+          # images, and drop sections left with no rows. "Major packages" rows use
+          # display names, mapped to rpm names per the template in Bazzite's
+          # .github/workflows/changelog.py; an unmapped display name (a row upstream
+          # added since) is kept rather than guessed at. No-op without /tmp/installed.txt.
+          printf '%s\n' \
+            'Kernel=kernel-core' 'Kernel (Nvidia LTS)=kernel-core-lts' \
+            'Firmware=atheros-firmware' 'Mesa=mesa-filesystem' \
+            'Gamescope=terra-gamescope' 'Gamescope Session=gamescope-session' \
+            'MangoHUD=terra-mangohud' 'InputPlumber=inputplumber' \
+            'OpenGamepadUI=opengamepadui' 'PowerStation=powerstation' \
+            'SteamOS-Manager=steamos-manager-powerstation' \
+            'sched_ext Schedulers=scx-scheds' 'UMU Launcher=umu-launcher' \
+            'Bazaar=bazaar' 'Distrobox=distrobox' 'UUPD=uupd' \
+            'Gnome=gnome-control-center-filesystem' 'KDE=plasma-desktop' \
+            'Waydroid=waydroid' 'Waydroid (Nvidia)=waydroid-nvidia' \
+            'Nvidia Open=nvidia-kmod-common' 'Nvidia LTS=nvidia-kmod-common-lts' \
+            > /tmp/major_map.txt
+          filter_installed() {   # stdin: markdown sections of tables -> stdout
+            if [ ! -s /tmp/installed.txt ]; then cat; return; fi
+            awk '
+              function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+              function flush() { if (rows) printf "%s", buf; buf = ""; rows = 0 }
+              BEGIN {
+                while ((getline n < "/tmp/installed.txt") > 0) have[n] = 1
+                while ((getline m < "/tmp/major_map.txt") > 0) {
+                  i = index(m, "="); map[substr(m, 1, i - 1)] = substr(m, i + 1)
+                }
+              }
+              /^#+[[:space:]]/ { flush(); buf = $0 "\n"; next }
+              /^\|/ {
+                split($0, f, "|"); a = trim(f[2]); b = trim(f[3])
+                if (a ~ /^\*\*.*\*\*$/) {             # Major: | **Display** | ver |
+                  n = substr(a, 3, length(a) - 4)
+                  if ((n in map) && !(map[n] in have)) next
+                  rows++
+                } else if (a != "" && a != "---" && a != "Name") {   # | 🔄 | rpm | ...
+                  if (!(b in have)) next
+                  rows++
+                }
+              }
+              { buf = buf $0 "\n" }
+              END { flush() }'
+          }
+
           # --- Per variant: new/prev Bazzite base version + boundary dates --------
           # Dates are 8-digit YYYYMMDD, so integer comparison is chronological.
           # || true guards each substitution: with pipefail set, a no-match grep or
@@ -627,7 +698,7 @@ jobs:
                 major="$(printf '%s\n' "$body" | awk '
                   /^#+[[:space:]]*[Mm]ajor/ {g=1; print; next}
                   g && /^#+[[:space:]]/ {g=0}
-                  g {print}')"
+                  g {print}' | filter_installed)"
                 [ -n "$major" ] && { printf '%s\n' "$major"; echo; }
                 # The per-family tables are the full package changelog and can run to
                 # a hundred-plus rows, so collapse them. The blank line after
@@ -635,7 +706,7 @@ jobs:
                 tables="$(printf '%s\n' "$body" | awk '
                   /^#+[[:space:]]*.*Images[[:space:]]*$/ {g=1; print; next}
                   g && /^#+[[:space:]]/ {g=0}
-                  g {print}')"
+                  g {print}' | filter_installed)"
                 if [ -n "$tables" ]; then
                   echo "<details><summary>Full package changes in ${tag}</summary>"
                   echo
@@ -659,19 +730,7 @@ jobs:
           # The base section above only covers Bazzite's own releases. Our layer also
           # pulls Brave, the podman compose stack and kernel-devel from live repos on
           # every build, so on a frozen-base day this is the only section that can
-          # show real movement. build_push publishes each image's package list as a
-          # tiny `<tag>-rpmdb` sidecar image (a FROM-scratch image holding one file),
-          # so reading it costs a few kB rather than a multi-GB image pull.
-          fetch_rpmdb() {   # $1 = image tag (without -rpmdb), $2 = output file
-            local d blob
-            d="$(mktemp -d)"
-            skopeo copy "docker://${REPO_IMG}:$1-rpmdb" "dir:${d}" >/dev/null 2>&1 || return 1
-            blob="$(jq -r '.layers[0].digest' "${d}/manifest.json" | cut -d: -f2)"
-            # No -z: GNU tar auto-detects compression, so this works whether the
-            # sidecar layer was pushed gzipped or plain.
-            tar -xOf "${d}/${blob}" rpmdb.txt > "$2" 2>/dev/null || return 1
-            [ -s "$2" ]
-          }
+          # show real movement. Today's manifests were fetched above (fetch_rpmdb).
 
           pkg_changed=""
           {
@@ -679,7 +738,7 @@ jobs:
             echo
             for v in latest beelink; do
               newf="/tmp/rpmdb-new-${v}.txt"; prevf="/tmp/rpmdb-prev-${v}.txt"
-              if ! fetch_rpmdb "${v}.${DATE}" "$newf"; then
+              if [ ! -s "$newf" ]; then
                 echo "- **:${v}** — _no package manifest published for this build._"
                 continue
               fi
